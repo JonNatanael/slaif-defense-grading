@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import stat
 import subprocess
 import sys
@@ -28,6 +29,27 @@ FORBIDDEN_IDENTIFIERS = [
     "63240002",
     "Ana Novak_12345_assignsubmission_file",
     "Unmatched Person_999_assignsubmission_file",
+]
+MESSY_FORBIDDEN_IDENTIFIERS = [
+    "Mila Kranjc",
+    "Luka Horvat",
+    "Nika Zupan",
+    "Taj Černe",
+    "Zoja Žagar",
+    "mila.kranjc@example.invalid",
+    "luka.horvat@example.invalid",
+    "nika.zupan@example.invalid",
+    "taj.cerne@example.invalid",
+    "zoja.zagar@example.invalid",
+    "SID-0001",
+    "SID-0002",
+    "SID-0003",
+    "SID-0004",
+    "SID-0005",
+    "Mila Kranjc_100_assignsubmission_file",
+    "Luka Horvat_200_assignsubmission_file",
+    "Taj Černe_400_assignsubmission_file",
+    "Unlisted Person_999_assignsubmission_file",
 ]
 
 
@@ -66,6 +88,113 @@ def build_synthetic_moodle_zip(path: Path) -> None:
             "Unmatched Person_999_assignsubmission_file/main.py",
             'print("Unmatched Person")\n',
         )
+
+
+def build_messy_synthetic_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
+    students_csv = tmp_path / "students.csv"
+    task_file = tmp_path / "task.tex"
+    input_zip = tmp_path / "messy_moodle_export.zip"
+
+    write_text(
+        students_csv,
+        "name,surname,email,student_id\n"
+        "Mila,Kranjc,mila.kranjc@example.invalid,SID-0001\n"
+        "Luka,Horvat,luka.horvat@example.invalid,SID-0002\n"
+        "Nika,Zupan,nika.zupan@example.invalid,SID-0003\n"
+        "Taj,Černe,taj.cerne@example.invalid,SID-0004\n"
+        "Zoja,Žagar,zoja.zagar@example.invalid,SID-0005\n",
+    )
+    write_text(task_file, "\\section{Synthetic Messy Assignment}\nUse dynamic programming and compare variants.\n")
+
+    nested_submission = tmp_path / "mila_submission.zip"
+    with zipfile.ZipFile(nested_submission, "w") as zf:
+        zf.writestr(
+            "src/solution.py",
+            'AUTHOR = "Mila Kranjc"\nEMAIL = "mila.kranjc@example.invalid"\nSTUDENT_ID = "SID-0001"\n',
+        )
+        zf.writestr(
+            "notebooks/analysis.ipynb",
+            json.dumps(
+                {
+                    "cells": [
+                        {
+                            "cell_type": "markdown",
+                            "source": ["Mila Kranjc used SID-0001 in this fake notebook."],
+                        }
+                    ],
+                    "metadata": {"author": "mila.kranjc@example.invalid"},
+                    "nbformat": 4,
+                    "nbformat_minor": 5,
+                }
+            ),
+        )
+
+    with zipfile.ZipFile(input_zip, "w") as zf:
+        zf.write(nested_submission, "Mila Kranjc_100_assignsubmission_file/submission.zip")
+        zf.writestr("Mila Kranjc_100_assignsubmission_file/Mila Kranjc report.pdf", b"%PDF synthetic Mila Kranjc")
+        zf.writestr(
+            "Luka Horvat_200_assignsubmission_file/main.c",
+            "/* Luka Horvat luka.horvat@example.invalid SID-0002 */\nint main(void) { return 0; }\n",
+        )
+        zf.writestr(
+            "Luka Horvat_200_assignsubmission_file/README.md",
+            "# Luka Horvat\nSynthetic notes for SID-0002.\n",
+        )
+        zf.writestr(
+            "Taj Černe_400_assignsubmission_file/Taj Černe analiza final.tex",
+            "\\section{Taj Černe}\nContact: taj.cerne@example.invalid\nID: SID-0004\n",
+        )
+        zf.writestr(
+            "Taj Černe_400_assignsubmission_file/čuden file name s presledki.py",
+            'print("Taj Černe")\n',
+        )
+        zf.writestr(
+            "Unlisted Person_999_assignsubmission_file/main.py",
+            'print("Unlisted Person should stay private")\n',
+        )
+
+    return input_zip, students_csv, task_file
+
+
+def run_messy_prepare(
+    tmp_path: Path, include_opaque_documents: bool = False
+) -> tuple[Path, Path, subprocess.CompletedProcess[str]]:
+    input_zip, students_csv, task_file = build_messy_synthetic_fixture(tmp_path)
+    workspace = tmp_path / "lab-agent"
+    private_output = tmp_path / "lab-private"
+    command = [
+        sys.executable,
+        "slaif-defense-grading.py",
+        "prepare",
+        "--input-file",
+        str(input_zip),
+        "--students-csv",
+        str(students_csv),
+        "--task-file",
+        str(task_file),
+        "--workspace",
+        str(workspace),
+        "--private-output",
+        str(private_output),
+    ]
+    if include_opaque_documents:
+        command.append("--include-opaque-documents")
+
+    result = subprocess.run(
+        command,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return workspace, private_output, result
+
+
+def relative_workspace_tree(workspace: Path) -> str:
+    return "\n".join(
+        path.relative_to(workspace).as_posix()
+        for path in sorted((p for p in workspace.rglob("*") if p.is_file()), key=lambda p: p.as_posix().casefold())
+    )
 
 
 def run_prepare(tmp_path: Path, include_opaque_documents: bool = False) -> tuple[Path, Path, subprocess.CompletedProcess[str]]:
@@ -127,6 +256,24 @@ def test_prepare_help_works() -> None:
     assert "--include-opaque-documents" in result.stdout
 
 
+def test_report_template_exists_and_readme_documents_pilot_outputs() -> None:
+    template = REPO_ROOT / "templates" / "workspace" / "report_aspects_template.md"
+    assert template.exists()
+    template_text = template.read_text(encoding="utf-8")
+    assert "# Poročilo za ustni zagovor: <Full Name>" in template_text
+    assert "Vidik poročila oziroma rešitve" in template_text
+    assert "Zakaj ta vidik izstopa" in template_text
+    assert "Vprašanje za študenta" in template_text
+    assert "Pričakovani odgovor" in template_text
+
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert readme.startswith('<div style="text-align: center;">')
+    assert "report_aspects_template.md" in readme
+    assert "student_outputs/" in readme
+    assert "student_outputs_index.csv" in readme
+    assert "--include-opaque-documents" in readme
+
+
 def test_prepare_creates_pseudonymized_workspace_and_private_outputs(tmp_path: Path) -> None:
     workspace, private_output, result = run_prepare(tmp_path)
 
@@ -142,11 +289,49 @@ def test_prepare_creates_pseudonymized_workspace_and_private_outputs(tmp_path: P
     process_text = process_sh.read_text(encoding="utf-8")
     assert process_sh.stat().st_mode & stat.S_IXUSR
     assert "Phase 1" not in process_text
+    assert "cat .slaif_prompts" not in process_text
     assert process_text.count("codex --ask-for-approval never --full-auto exec --skip-git-repo-check") == 2
-    assert process_text.index(".slaif_prompts/phase2_Student_0001.md") < process_text.index(".slaif_prompts/phase2_Student_0002.md")
+    assert process_text.index("Run oral-verification report for Student 0001") < process_text.index(
+        "Run oral-verification report for Student 0002"
+    )
     assert "Ana Novak" not in process_text
     assert "Boris Kovac" not in process_text
-    assert not list(workspace.rglob("AGENTS.md"))
+    assert not (workspace / ".slaif_prompts").exists()
+
+    agents_md = workspace / "AGENTS.md"
+    assert agents_md.exists()
+    assert agents_md.read_text(encoding="utf-8") == (REPO_ROOT / "templates" / "workspace" / "AGENTS.md").read_text(
+        encoding="utf-8"
+    )
+    agents_text = agents_md.read_text(encoding="utf-8")
+    assert "Run oral-verification report for Student 0001" in agents_text
+    assert "students.csv" in agents_text
+    assert "associations.csv" in agents_text
+    assert "task.tex" in agents_text
+    assert "report_aspects_template.md" in agents_text
+    assert "Use `report_aspects_template.md` as the mandatory output template" in agents_text
+    assert "Preserve the headings and template structure exactly" in agents_text
+    assert "Do not invent questions" in agents_text
+    assert "Do not expose expected answers to students" in agents_text
+    assert "Vidik poročila oziroma rešitve" in agents_text
+    assert "Zakaj ta vidik izstopa" in agents_text
+    assert "Vprašanje za študenta" in agents_text
+    assert "Pričakovani odgovor" in agents_text
+    assert "preprocessing" in agents_text
+    assert "already done locally" in agents_text
+    assert "Do not redo preprocessing" in agents_text
+    assert "The only student submission files are the files listed in `associations.csv`." in agents_text
+    assert "Do not accuse AI use" in agents_text
+    for value in FORBIDDEN_IDENTIFIERS:
+        assert value not in agents_text
+
+    report_template = workspace / "report_aspects_template.md"
+    assert report_template.exists()
+    assert report_template.read_text(encoding="utf-8") == (
+        REPO_ROOT / "templates" / "workspace" / "report_aspects_template.md"
+    ).read_text(encoding="utf-8")
+    for value in FORBIDDEN_IDENTIFIERS:
+        assert value not in report_template.read_text(encoding="utf-8")
 
     student_text = (workspace / "Student_0001.txt").read_text(encoding="utf-8")
     assert "==== BEGIN Student 0001 | submission | main.py ====" in student_text
@@ -182,28 +367,6 @@ def test_prepare_creates_pseudonymized_workspace_and_private_outputs(tmp_path: P
     for value in FORBIDDEN_IDENTIFIERS:
         assert value not in association_text
 
-    prompt_paths = sorted((workspace / ".slaif_prompts").glob("*.md"))
-    assert [path.name for path in prompt_paths] == ["phase2_Student_0001.md", "phase2_Student_0002.md"]
-    prompt_text = prompt_paths[0].read_text(encoding="utf-8")
-    assert "Student 0001" in prompt_text
-    assert "Student_0001.txt" in prompt_text
-    assert "Student 0001/report_aspects.md" in prompt_text
-    assert "students.csv" in prompt_text
-    assert "associations.csv" in prompt_text
-    assert "task.tex" in prompt_text
-    assert "Vidik poročila oziroma rešitve" in prompt_text
-    assert "Zakaj ta vidik izstopa" in prompt_text
-    assert "Vprašanje za študenta" in prompt_text
-    assert "Pričakovani odgovor" in prompt_text
-    assert "AI-authorship accusations" in prompt_text
-    for value in FORBIDDEN_IDENTIFIERS:
-        assert value not in prompt_text
-
-    unresolved_prompt = prompt_paths[1].read_text(encoding="utf-8")
-    assert "Student 0002" in unresolved_prompt
-    assert "none" in unresolved_prompt
-    assert "no submission material was found" in unresolved_prompt
-
     map_path = private_output / "pseudonym_map.csv"
     assert map_path.exists()
     assert not (workspace / "pseudonym_map.csv").exists()
@@ -214,6 +377,32 @@ def test_prepare_creates_pseudonymized_workspace_and_private_outputs(tmp_path: P
     assert rows[0]["surname"] == "Novak"
     assert rows[0]["email"] == "ana.novak@example.invalid"
     assert rows[0]["student_id"] == "63240001"
+
+    student_outputs = private_output / "student_outputs"
+    assert student_outputs.exists()
+    assert (student_outputs / "Student_0001.txt").read_text(encoding="utf-8") == (workspace / "Student_0001.txt").read_text(
+        encoding="utf-8"
+    )
+    assert not (student_outputs / "Student_0002.txt").exists()
+    student_output_text = (student_outputs / "Student_0001.txt").read_text(encoding="utf-8")
+    for value in FORBIDDEN_IDENTIFIERS:
+        assert value not in student_output_text
+
+    index_path = private_output / "student_outputs_index.csv"
+    assert index_path.exists()
+    with index_path.open("r", encoding="utf-8", newline="") as f:
+        index_rows = list(csv.DictReader(f))
+    assert index_rows == [
+        {
+            "pseudonym": "Student 0001",
+            "name": "Ana",
+            "surname": "Novak",
+            "full_name": "Ana Novak",
+            "student_output_file": "Student_0001.txt",
+            "email": "ana.novak@example.invalid",
+            "student_id": "63240001",
+        }
+    ]
 
     report = (private_output / "preprocessing_report.md").read_text(encoding="utf-8")
     assert "Roster students: 2" in report
@@ -228,6 +417,8 @@ def test_prepare_creates_pseudonymized_workspace_and_private_outputs(tmp_path: P
     assert "Ana Novak comments.rtf" in report
     assert "Original matched LMS folder: `Ana Novak_12345_assignsubmission_file`" in report
     assert "Workspace text output: `Student_0001.txt`" in report
+    assert "Student-visible concatenated outputs were written to `student_outputs/`" in report
+    assert "`student_outputs_index.csv` maps those pseudonymized files back to real roster rows" in report
 
 
 def test_prepare_can_explicitly_include_opaque_documents_with_warning(tmp_path: Path) -> None:
@@ -256,6 +447,191 @@ def test_prepare_can_explicitly_include_opaque_documents_with_warning(tmp_path: 
     assert rows[0]["status"] == "matched"
     for value in FORBIDDEN_IDENTIFIERS:
         assert value not in (workspace / "associations.csv").read_text(encoding="utf-8")
+
+
+def test_messy_prepare_default_mode_end_to_end_audit(tmp_path: Path) -> None:
+    workspace, private_output, result = run_messy_prepare(tmp_path)
+    tree = relative_workspace_tree(workspace)
+
+    assert result.returncode == 0, result.stderr
+    assert (workspace / "AGENTS.md").exists(), tree
+    assert (workspace / "students.csv").exists(), tree
+    assert (workspace / "associations.csv").exists(), tree
+    assert (workspace / "task.tex").read_text(encoding="utf-8").startswith("\\section{Synthetic Messy Assignment}"), tree
+    assert (workspace / "report_aspects_template.md").exists(), tree
+    assert (workspace / "process.sh").exists(), tree
+    assert not (workspace / ".slaif_prompts").exists(), tree
+
+    assert (workspace / "students.csv").read_text(encoding="utf-8") == (
+        "name,surname,full_name\n"
+        "Student,0001,Student 0001\n"
+        "Student,0002,Student 0002\n"
+        "Student,0003,Student 0003\n"
+        "Student,0004,Student 0004\n"
+        "Student,0005,Student 0005\n"
+    )
+
+    process_sh = workspace / "process.sh"
+    process_text = process_sh.read_text(encoding="utf-8")
+    assert process_sh.stat().st_mode & stat.S_IXUSR
+    assert "Phase 1" not in process_text
+    assert "cat .slaif_prompts" not in process_text
+    assert process_text.count("Run oral-verification report for Student ") == 5
+    for idx in range(1, 5):
+        assert process_text.index(f"Run oral-verification report for Student {idx:04d}") < process_text.index(
+            f"Run oral-verification report for Student {idx + 1:04d}"
+        )
+
+    agents_text = (workspace / "AGENTS.md").read_text(encoding="utf-8")
+    assert agents_text == (REPO_ROOT / "templates" / "workspace" / "AGENTS.md").read_text(encoding="utf-8")
+    assert "students.csv" in agents_text
+    assert "associations.csv" in agents_text
+    assert "task.tex" in agents_text
+    assert "report_aspects_template.md" in agents_text
+    assert "The only student submission files are the files listed in `associations.csv`." in agents_text
+    assert "Preserve the headings and template structure exactly" in agents_text
+    assert "<Full Name>/report_aspects.md" in agents_text
+    assert "Do not infer, request, or reconstruct real student identities." in agents_text
+    assert "Do not accuse AI use" in agents_text
+    assert "Do not redo preprocessing" in agents_text
+    assert "Run Phase 1" not in agents_text
+    assert "Build associations" not in agents_text
+
+    template_text = (workspace / "report_aspects_template.md").read_text(encoding="utf-8")
+    assert "# Poročilo za ustni zagovor: <Full Name>" in template_text
+    for value in MESSY_FORBIDDEN_IDENTIFIERS:
+        assert value not in template_text
+
+    with (workspace / "associations.csv").open("r", encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    assert reader.fieldnames == ASSOCIATION_COLUMNS
+    assert [row["full_name"] for row in rows] == [
+        "Student 0001",
+        "Student 0002",
+        "Student 0003",
+        "Student 0004",
+        "Student 0005",
+    ]
+    assert [row["status"] for row in rows] == ["matched", "matched", "unresolved", "matched", "unresolved"]
+    assert rows[0]["associated_txt_files"] == "Student_0001.txt"
+    assert rows[1]["associated_txt_files"] == "Student_0002.txt"
+    assert rows[2]["all_associated_files"] == ""
+    assert rows[3]["associated_txt_files"] == "Student_0004.txt"
+    assert rows[4]["all_associated_files"] == ""
+    assert all(row["associated_document_files"] == "" for row in rows)
+    assert all("Mila Kranjc report.pdf" not in row["all_associated_files"] for row in rows)
+
+    assert (workspace / "Student_0001.txt").exists(), tree
+    assert (workspace / "Student_0002.txt").exists(), tree
+    assert not (workspace / "Student_0003.txt").exists(), tree
+    assert (workspace / "Student_0004.txt").exists(), tree
+    assert not (workspace / "Student_0005.txt").exists(), tree
+    assert not list(workspace.glob("*.pdf")), tree
+    assert not any("Unlisted" in path.name for path in workspace.rglob("*")), tree
+
+    student_0001 = (workspace / "Student_0001.txt").read_text(encoding="utf-8")
+    assert "notebooks/analysis.ipynb" in student_0001
+    assert "Student 0001" in student_0001
+    assert "Mila Kranjc" not in student_0001
+    assert "mila.kranjc@example.invalid" not in student_0001
+    assert "SID-0001" not in student_0001
+
+    student_0004 = (workspace / "Student_0004.txt").read_text(encoding="utf-8")
+    assert "Student 0004 analiza final.tex" in student_0004
+    assert "čuden file name s presledki.py" in student_0004
+    assert "Taj Černe" not in student_0004
+    assert "taj.cerne@example.invalid" not in student_0004
+    assert "SID-0004" not in student_0004
+
+    report = (private_output / "preprocessing_report.md").read_text(encoding="utf-8")
+    assert "Roster students: 5" in report
+    assert "Matched students: 3" in report
+    assert "Students without submissions: 2" in report
+    assert "Unlisted Person_999_assignsubmission_file" in report
+    assert "Mila Kranjc_100_assignsubmission_file/" in report
+    assert "Mila Kranjc report.pdf" in report
+    assert "excluded from the workspace by default" in report
+    assert "Original matched LMS folder: `Mila Kranjc_100_assignsubmission_file`" in report
+    assert "Original matched LMS folder: `Luka Horvat_200_assignsubmission_file`" in report
+    assert "Original matched LMS folder: `Taj Černe_400_assignsubmission_file`" in report
+    assert "Student-visible concatenated outputs were written to `student_outputs/`" in report
+
+    student_outputs = private_output / "student_outputs"
+    assert sorted(path.name for path in student_outputs.glob("*.txt")) == [
+        "Student_0001.txt",
+        "Student_0002.txt",
+        "Student_0004.txt",
+    ]
+    assert (student_outputs / "Student_0001.txt").read_text(encoding="utf-8") == (workspace / "Student_0001.txt").read_text(
+        encoding="utf-8"
+    )
+    assert not (student_outputs / "Student_0003.txt").exists()
+    assert not (student_outputs / "Student_0005.txt").exists()
+
+    with (private_output / "student_outputs_index.csv").open("r", encoding="utf-8", newline="") as f:
+        output_index_rows = list(csv.DictReader(f))
+    assert [row["pseudonym"] for row in output_index_rows] == ["Student 0001", "Student 0002", "Student 0004"]
+    assert output_index_rows[0]["name"] == "Mila"
+    assert output_index_rows[0]["surname"] == "Kranjc"
+    assert output_index_rows[0]["full_name"] == "Mila Kranjc"
+    assert output_index_rows[0]["email"] == "mila.kranjc@example.invalid"
+    assert output_index_rows[0]["student_id"] == "SID-0001"
+    assert output_index_rows[0]["student_output_file"] == "Student_0001.txt"
+
+    for output_file in student_outputs.glob("*.txt"):
+        output_text = output_file.read_text(encoding="utf-8")
+        for value in MESSY_FORBIDDEN_IDENTIFIERS:
+            assert value not in output_text, f"{value!r} leaked in private student output {output_file.name!r}"
+
+    for path in workspace.rglob("*"):
+        rel = path.relative_to(workspace).as_posix()
+        for value in MESSY_FORBIDDEN_IDENTIFIERS:
+            assert value not in rel, f"{value!r} leaked in workspace path {rel!r}\n{tree}"
+        if path.is_file() and path.suffix.lower() in {
+            ".txt",
+            ".csv",
+            ".sh",
+            ".tex",
+            ".md",
+            ".py",
+            ".m",
+            ".c",
+            ".h",
+            ".cpp",
+            ".hpp",
+            ".ipynb",
+        }:
+            text = path.read_text(encoding="utf-8")
+            for value in MESSY_FORBIDDEN_IDENTIFIERS:
+                assert value not in text, f"{value!r} leaked in workspace file {rel!r}\n{tree}"
+
+
+def test_messy_prepare_opt_in_opaque_documents_are_pseudonymized(tmp_path: Path) -> None:
+    workspace, private_output, result = run_messy_prepare(tmp_path, include_opaque_documents=True)
+    tree = relative_workspace_tree(workspace)
+
+    assert result.returncode == 0, result.stderr
+    copied_documents = sorted(path.name for path in workspace.iterdir() if path.suffix.lower() in {".pdf", ".docx"})
+    assert copied_documents == ["Student_0001__document_001.pdf"], tree
+    assert "Mila Kranjc" not in copied_documents[0]
+
+    with (workspace / "associations.csv").open("r", encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert rows[0]["associated_document_files"] == "Student_0001__document_001.pdf"
+    assert rows[0]["all_associated_files"] == "Student_0001.txt;Student_0001__document_001.pdf"
+    assert rows[1]["associated_document_files"] == ""
+
+    report = (private_output / "preprocessing_report.md").read_text(encoding="utf-8")
+    assert "Opaque document inclusion was explicitly enabled" in report
+    assert "internal content and metadata were not inspected or redacted" in report
+    assert "Student_0001__document_001.pdf" in report
+
+    workspace_text = (workspace / "associations.csv").read_text(encoding="utf-8") + "\n" + (workspace / "process.sh").read_text(
+        encoding="utf-8"
+    )
+    for value in MESSY_FORBIDDEN_IDENTIFIERS:
+        assert value not in workspace_text
 
 
 def test_workspace_generated_text_and_filenames_do_not_contain_real_identifiers(tmp_path: Path) -> None:

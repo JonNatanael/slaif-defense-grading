@@ -40,10 +40,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
             Create a pseudonymized workspace for later AI-assisted oral defense preparation.
 
             Real roster data is read locally from --students-csv. The generated workspace
-            receives only pseudonyms, copied task.tex, pseudonymized submission text files,
-            associations.csv, prompt files, and a locally rendered process.sh. The private
-            pseudonym map and preprocessing report are written under --private-output,
-            outside the workspace.
+            receives only pseudonyms, copied task.tex, a workspace AGENTS.md, a report
+            template, pseudonymized submission text files, associations.csv, and a locally
+            rendered process.sh. The private pseudonym map, student-output copies, and
+            preprocessing report are written under --private-output, outside the workspace.
             """
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -177,6 +177,8 @@ def run_prepare(args: argparse.Namespace) -> int:
     workspace = Path(args.workspace).expanduser().resolve()
     private_output = Path(args.private_output).expanduser().resolve()
     template_path = REPO_ROOT / "templates" / "process.sh.tpl"
+    workspace_agents_template = REPO_ROOT / "templates" / "workspace" / "AGENTS.md"
+    report_template = REPO_ROOT / "templates" / "workspace" / "report_aspects_template.md"
 
     try:
         result = prepare_workspace(
@@ -186,6 +188,8 @@ def run_prepare(args: argparse.Namespace) -> int:
             workspace=workspace,
             private_output=private_output,
             template_path=template_path,
+            workspace_agents_template=workspace_agents_template,
+            report_template=report_template,
             include_opaque_documents=args.include_opaque_documents,
         )
     except Exception as exc:  # noqa: BLE001

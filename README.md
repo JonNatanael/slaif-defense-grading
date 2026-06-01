@@ -1,92 +1,87 @@
-# slaif-defense-grading
+<div style="text-align: center;">
+  <a href="https://www.slaif.si">
+    <img src="https://slaif.si/img/logos/SLAIF_logo_ANG_barve.svg" width="400" height="400">
+  </a>
+</div>
 
-`slaif-defense-grading` is a local command-line preprocessing tool for preparing lab-submission material for later human-led oral defense grading.
+# SLAIF Defense Grading
+
+`slaif-defense-grading` is a local command-line preprocessing tool for preparing pseudonymized lab-submission workspaces for later human-led oral defense grading.
 
 SLAIF stands for Slovenian AI Factory.
 
-This repository is for local instructor-side preprocessing. It is not an automatic grading system, not an AI detector, not a plagiarism accusation tool, and not a fully automatic decision-maker.
+This project is not an automatic grading system, not an AI detector, not a plagiarism accusation tool, and not a fully automatic decision-maker.
 
-## Privacy Boundary
+## Current Workflow
 
-The core safety boundary is local pseudonymization.
-
-- Real student identities may be used only during local preprocessing.
-- The later agent-facing workspace must contain only pseudonymized data.
-- The private mapping from real identities to pseudonyms must stay outside the agent workspace.
-- `process.sh` is rendered locally from `templates/process.sh.tpl`; the later agent does not create it.
-- Do not commit real student rosters, submission ZIPs, generated outputs, or private mappings.
-
-## Prepare Command
-
-The primary workflow is:
+Preprocessing is run locally by the instructor:
 
 ```bash
-python slaif-defense-grading.py prepare \
+python3 slaif-defense-grading.py prepare \
   --input-file moodle_export.zip \
   --students-csv students.csv \
   --task-file task.tex \
-  --workspace workspace/lab-03-agent \
-  --private-output workspace/lab-03-private
+  --workspace workspace/lab-agent \
+  --private-output workspace/lab-private
 ```
 
-Multiple input ZIPs are supported:
+Multiple ZIP exports are supported with one `--input-file` argument followed by one or more ZIP paths:
 
 ```bash
-python slaif-defense-grading.py prepare \
+python3 slaif-defense-grading.py prepare \
   --input-file export1.zip export2.zip \
   --students-csv students.csv \
   --task-file task.tex \
-  --workspace workspace/lab-03-agent \
-  --private-output workspace/lab-03-private
+  --workspace workspace/lab-agent \
+  --private-output workspace/lab-private
 ```
 
-Later ZIPs override earlier submissions for duplicate LMS student folders, matching the retained legacy merge behavior.
+`prepare` currently:
 
-The input `students.csv` must contain at least:
+- reads the private real `students.csv` locally;
+- assigns deterministic pseudonyms in CSV order, such as `Student 0001`;
+- processes Moodle/Canvas-style ZIP exports with safe ZIP extraction;
+- creates a pseudonymized agent workspace;
+- writes private `pseudonym_map.csv` outside the workspace;
+- writes private `preprocessing_report.md` outside the workspace;
+- copies `task.tex` into the workspace;
+- generates pseudonymized `students.csv`;
+- generates pseudonymized `associations.csv`;
+- copies `templates/workspace/AGENTS.md` into the workspace as `AGENTS.md`;
+- copies `templates/workspace/report_aspects_template.md` into the workspace;
+- renders executable `process.sh`;
+- writes pseudonymized student-output copies for instructor/student review;
+- writes private `student_outputs_index.csv`;
+- excludes opaque documents by default.
 
-```csv
-name,surname
-Ana,Novak
-Boris,Kovac
-```
-
-Optional columns such as `email` and `student_id` are preserved in the private pseudonym map. The real input roster is not copied into the agent workspace.
-
-Opaque binary documents are excluded by default. To explicitly include them under pseudonymized filenames:
-
-```bash
-python slaif-defense-grading.py prepare \
-  --input-file moodle_export.zip \
-  --students-csv students.csv \
-  --task-file task.tex \
-  --workspace workspace/lab-03-agent \
-  --private-output workspace/lab-03-private \
-  --include-opaque-documents
-```
-
-Use this flag only when the instructor accepts the privacy tradeoff. It weakens the workspace privacy guarantee because internal document content and metadata are not redacted.
+Later ZIPs override earlier submissions for duplicate LMS student folders.
 
 ## Generated Outputs
 
 Agent-facing workspace:
 
 ```text
-workspace/lab-03-agent/
+lab-agent/
+  AGENTS.md
+  Student_0001.txt
+  Student_0002.txt
   associations.csv
+  process.sh
+  report_aspects_template.md
   students.csv
   task.tex
-  process.sh
-  Student_0001.txt
-  .slaif_prompts/
-    phase2_Student_0001.md
 ```
 
 Private instructor-only output:
 
 ```text
-workspace/lab-03-private/
-  pseudonym_map.csv
+lab-private/
   preprocessing_report.md
+  pseudonym_map.csv
+  student_outputs/
+    Student_0001.txt
+    Student_0002.txt
+  student_outputs_index.csv
 ```
 
 The workspace `students.csv` contains only pseudonym data:
@@ -97,39 +92,117 @@ Student,0001,Student 0001
 Student,0002,Student 0002
 ```
 
-`process.sh` contains one per-student oral-verification command per pseudonymized student, in roster order.
-`associations.csv` is generated locally during `prepare`. It is pseudonymized and safe for the agent workspace.
+`associations.csv` is generated locally by `prepare`. It maps each pseudonymized student to pseudonymized workspace filenames and never contains real names, emails, student IDs, or original LMS folder names.
 
-`process.sh` no longer runs an agent Phase 1. Association building is local preprocessing. The generated script runs one self-contained per-student command in pseudonym order, reading prompts from `.slaif_prompts/`. No generated workspace `AGENTS.md` is used.
+`report_aspects_template.md` defines the mandatory structure for every generated `report_aspects.md`. The generated workspace `AGENTS.md` instructs the later grading agent to follow this template and preserve its headings.
 
-## Matching And Privacy Checks
+`student_outputs/` contains pseudonymized copies of the same concatenated `Student_XXXX.txt` files that the agent sees. These files are intended as per-student review material that an instructor can retrieve and show individually. The private `student_outputs_index.csv` and `pseudonym_map.csv` identify which file belongs to which real student and must not be shared wholesale with students.
 
-`prepare` matches LMS folders to roster rows by exact normalized `name surname` from the folder prefix before the first Moodle underscore. For example:
+## Running The Agent Workflow
+
+After `prepare` completes, run the generated script from inside the pseudonymized workspace:
+
+```bash
+cd workspace/lab-agent
+./process.sh
+```
+
+`process.sh` runs one Codex command per pseudonymized student in roster order:
+
+```bash
+codex --ask-for-approval never --full-auto exec --skip-git-repo-check "Run oral-verification report for Student 0001"
+```
+
+There is no agent-run Phase 1. Association generation is local preprocessing and is already complete before `process.sh` runs.
+
+## AGENTS.md Roles
+
+There are two different `AGENTS.md` files:
+
+- Root `AGENTS.md` is for coding agents modifying this repository.
+- Generated workspace `AGENTS.md` is copied from `templates/workspace/AGENTS.md` and is for the later oral-verification/grading agent inside the pseudonymized workspace.
+
+Preprocessing is not an agent task. The later agent should use `students.csv`, `associations.csv`, and `task.tex`, and should treat only files listed in `associations.csv` as student submissions.
+
+There is no `.slaif_prompts/` directory.
+
+## Privacy Model
+
+The default workspace is pseudonymized text-only material.
+
+- Real student identities may be used only during local preprocessing.
+- The real input roster is never copied into the agent workspace.
+- The private pseudonym map stays outside the workspace.
+- Unmatched LMS folders are not copied into the workspace and appear only in the private report.
+- Generated filenames, CSVs, shell scripts, `AGENTS.md`, and text/source/notebook files are leak-checked for known roster identifiers.
+- `report_aspects_template.md` is copied into the workspace and included in the same text leak-check boundary.
+- Known full names, emails, and `student_id` values are scrubbed from generated text outputs before the workspace leak check runs.
+- Private `student_outputs/` files are pseudonymized copies of the generated agent input text files and must not contain real names, emails, student IDs, or LMS folder names.
+
+Matching is conservative. LMS folders are matched to roster rows by exact normalized `name surname` from the folder prefix before the first Moodle underscore:
 
 ```text
 Ana Novak_12345_assignsubmission_file -> Ana Novak
 ```
 
-Unmatched LMS folders are not copied into the workspace. They are listed in the private `preprocessing_report.md`.
+## Opaque Documents
 
-Private matching details, including original LMS folder names and excluded opaque documents, stay in `private-output/preprocessing_report.md`.
+Opaque document files are excluded by default:
 
-Text/source files are concatenated into pseudonymized files such as `Student_0001.txt`. Known roster full names, emails, and `student_id` values are scrubbed from generated text outputs before privacy checks run.
+```text
+.pdf
+.docx
+.doc
+.odt
+.rtf
+```
 
-Text-like files eligible for concatenation and scrubbing include `.txt`, `.py`, `.m`, `.c`, `.h`, `.cpp`, `.hpp`, `.ipynb`, `.md`, and `.tex`. Notebooks are treated as text JSON; this tool does not do notebook-aware parsing yet.
+They are excluded because this lightweight tool does not redact internal document content or metadata. Their existence is recorded in `private-output/preprocessing_report.md`.
 
-Before finishing, the command checks generated workspace filenames and generated text-like files for real full names, emails, and student IDs from the roster. If a leak is found, the command fails.
+To explicitly include opaque documents under pseudonymized filenames:
 
-Opaque document files such as `.pdf`, `.docx`, `.doc`, `.odt`, and `.rtf` are excluded from the workspace by default because this lightweight tool cannot safely pseudonymize their internal content or metadata. Their existence is listed in the private `preprocessing_report.md`.
+```bash
+python3 slaif-defense-grading.py prepare \
+  --input-file moodle_export.zip \
+  --students-csv students.csv \
+  --task-file task.tex \
+  --workspace workspace/lab-agent \
+  --private-output workspace/lab-private \
+  --include-opaque-documents
+```
 
-If `--include-opaque-documents` is used, opaque documents are copied under pseudonymized filenames such as `Student_0001__document_001.pdf`. The private report repeats the caveat that internal content and metadata may still contain real identities. The safest default workspace contains only text that the tool can scrub and verify.
+This weakens the privacy guarantee. Copied opaque document filenames are pseudonymized, but PDF/DOCX/etc. internal content and metadata are not inspected or redacted.
+
+## Testing And Audit Coverage
+
+Tests use only synthetic data.
+
+The end-to-end messy fixture covers:
+
+- 5-student roster;
+- nested ZIP submission;
+- direct-folder submission;
+- missing roster students;
+- unmatched LMS folder;
+- notebook JSON treated as text;
+- Markdown, TeX, and source files;
+- weird/non-ASCII filename;
+- fake real identifiers requiring scrubbing;
+- default-excluded opaque PDF;
+- opt-in opaque document behavior.
+
+Run tests with:
+
+```bash
+pytest
+```
 
 ## Legacy Command
 
 The previous ZIP concatenation flow is still available:
 
 ```bash
-python slaif-defense-grading.py legacy \
+python3 slaif-defense-grading.py legacy \
   --input-file <MASTER1.zip> [<MASTER2.zip> ...] \
   (--output-file <OUTPUT.txt> | --output-directory <OUTPUT_DIR>) \
   [--similarity-check]
@@ -138,14 +211,14 @@ python slaif-defense-grading.py legacy \
 For compatibility, the legacy arguments also still work without the `legacy` subcommand:
 
 ```bash
-python slaif-defense-grading.py \
+python3 slaif-defense-grading.py \
   --input-file work/inputs/lab-05-export.zip \
   --output-file work/outputs/lab-05.txt
 ```
 
 Legacy mode may derive labels from LMS folder names. Use `prepare` for the pseudonymized workspace workflow.
 
-## Lightweight Repository Structure
+## Repository Structure
 
 ```text
 README.md
@@ -164,22 +237,15 @@ slaif_defense_grading/
 
 templates/
   process.sh.tpl
+  workspace/
+    AGENTS.md
+    report_aspects_template.md
 
 tests/
 ```
 
-No generated workspace `AGENTS.md` is used or documented.
-
-## Development
-
-Install the minimal development dependency set:
+Install the minimal dependency set:
 
 ```bash
 pip install -r requirements.txt
-```
-
-Run tests:
-
-```bash
-pytest
 ```
