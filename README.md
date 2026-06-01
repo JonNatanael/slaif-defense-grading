@@ -296,3 +296,24 @@ Install the minimal dependency set:
 ```bash
 pip install -r requirements.txt
 ```
+
+## Maintainer
+
+Janez Perš  
+Faculty of Electrical Engineering, University of Ljubljana  
+Laboratory for Machine Intelligence (LMI)  
+Email: janez.pers@fe.uni-lj.si  
+
+- Profile: https://lmi.fe.uni-lj.si/en/janez-pers-2/
+- Laboratory: https://lmi.fe.uni-lj.si/en
+
+## Security Contact
+
+For responsible disclosure of vulnerabilities, please contact:  
+janez.pers@fe.uni-lj.si
+
+## Acknowledgement
+
+We acknowledge the support of the EC/EuroHPC JU and the Slovenian Ministry of HESI via the project SLAIF (grant number 101254461).
+
+Project website: https://www.slaif.si
