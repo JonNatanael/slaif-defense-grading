@@ -72,10 +72,13 @@ Agent-facing workspace:
 
 ```text
 workspace/lab-03-agent/
+  associations.csv
   students.csv
   task.tex
   process.sh
   Student_0001.txt
+  .slaif_prompts/
+    phase2_Student_0001.md
 ```
 
 Private instructor-only output:
@@ -94,7 +97,10 @@ Student,0001,Student 0001
 Student,0002,Student 0002
 ```
 
-`process.sh` contains one Phase 1 command and one Phase 2 command per pseudonymized student, in roster order.
+`process.sh` contains one per-student oral-verification command per pseudonymized student, in roster order.
+`associations.csv` is generated locally during `prepare`. It is pseudonymized and safe for the agent workspace.
+
+`process.sh` no longer runs an agent Phase 1. Association building is local preprocessing. The generated script runs one self-contained per-student command in pseudonym order, reading prompts from `.slaif_prompts/`. No generated workspace `AGENTS.md` is used.
 
 ## Matching And Privacy Checks
 
@@ -105,6 +111,8 @@ Ana Novak_12345_assignsubmission_file -> Ana Novak
 ```
 
 Unmatched LMS folders are not copied into the workspace. They are listed in the private `preprocessing_report.md`.
+
+Private matching details, including original LMS folder names and excluded opaque documents, stay in `private-output/preprocessing_report.md`.
 
 Text/source files are concatenated into pseudonymized files such as `Student_0001.txt`. Known roster full names, emails, and `student_id` values are scrubbed from generated text outputs before privacy checks run.
 
