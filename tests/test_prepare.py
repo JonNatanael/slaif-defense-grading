@@ -266,6 +266,7 @@ def test_prepare_help_works() -> None:
     assert "--students-csv" in result.stdout
     assert "--private-output" in result.stdout
     assert "--include-opaque-documents" in result.stdout
+    assert "task.*" in result.stdout
 
 
 def test_finalize_help_works() -> None:
@@ -305,6 +306,11 @@ def test_report_template_exists_and_readme_documents_pilot_outputs() -> None:
     assert "--task-file assignment.pdf" in readme
     assert "task.pdf" in readme
     assert "task.*" in readme
+    assert "Legacy Command" not in readme
+    assert "SLAIF stands for" not in readme
+    assert "work completed outside direct supervision" in readme
+    assert "plagiarism, unauthorized collaboration, or improper AI-tool use" in readme
+    assert "does not automatically prove misconduct" in readme
 
 
 def test_quickstart_documents_complete_workflow() -> None:
@@ -320,6 +326,8 @@ def test_quickstart_documents_complete_workflow() -> None:
     assert "--include-opaque-documents" in text
     assert "--task-file assignment.pdf" in text
     assert "task.pdf" in text
+    assert "submissions completed outside direct supervision" in text
+    assert "legacy" not in text.casefold()
 
 
 def test_finalize_collects_named_outputs_and_missing_reports(tmp_path: Path) -> None:

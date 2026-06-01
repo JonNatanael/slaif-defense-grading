@@ -6,17 +6,31 @@
 
 # SLAIF Defense Grading
 
-`slaif-defense-grading` is a local command-line preprocessing tool for preparing pseudonymized lab-submission workspaces for later human-led oral defense grading.
+A local-first workflow for preparing oral-defense questions for student work completed outside direct supervision.
 
-SLAIF stands for Slovenian AI Factory.
+The tool prepares a pseudonymized workspace for an AI coding agent, runs no grading decisions itself, and then maps the agent's pseudonymized reports back to private instructor-facing outputs.
 
-This project is not an automatic grading system, not an AI detector, not a plagiarism accusation tool, and not a fully automatic decision-maker.
+It is designed for instructors who need targeted questions about submitted code, reports, notebooks, graphs, parameters, explanations, or other artifacts. This can support ordinary oral defenses as well as cases where the instructor needs to probe possible plagiarism, unauthorized collaboration, or improper AI-tool use.
+
+The tool does not automatically prove misconduct. It helps prepare concrete, submission-specific questions so the instructor can verify whether the student understands the work they submitted.
 
 For a complete step-by-step run, see [QUICKSTART.md](QUICKSTART.md).
 
+## What Problem This Solves
+
+Many lab assignments are completed outside direct supervision. Written submissions alone do not always show whether a student understands the work they submitted, and generic oral-defense questions are weak because they are not tied to the actual artifacts.
+
+This workflow creates targeted oral-verification questions from the submitted material. It can help reveal cases where a student cannot explain their own code, report, notebook, graph, parameter choices, or conclusions. That signal may be relevant to plagiarism, unauthorized collaboration, or improper AI-tool use, but it is not automatic proof. Final judgment remains a human instructor decision.
+
 ## Current Workflow
 
-Preprocessing is run locally by the instructor:
+The supported workflow is:
+
+1. `prepare`: run local preprocessing and create a pseudonymized agent workspace.
+2. Run `process.sh`: ask the agent to generate one pseudonymized oral-verification report per student.
+3. `finalize`: locally map pseudonymized reports back to private named instructor outputs.
+
+Prepare the pseudonymized workspace:
 
 ```bash
 python3 slaif-defense-grading.py prepare \
@@ -229,27 +243,6 @@ Run tests with:
 ```bash
 pytest
 ```
-
-## Legacy Command
-
-The previous ZIP concatenation flow is still available:
-
-```bash
-python3 slaif-defense-grading.py legacy \
-  --input-file <MASTER1.zip> [<MASTER2.zip> ...] \
-  (--output-file <OUTPUT.txt> | --output-directory <OUTPUT_DIR>) \
-  [--similarity-check]
-```
-
-For compatibility, the legacy arguments also still work without the `legacy` subcommand:
-
-```bash
-python3 slaif-defense-grading.py \
-  --input-file work/inputs/lab-05-export.zip \
-  --output-file work/outputs/lab-05.txt
-```
-
-Legacy mode may derive labels from LMS folder names. Use `prepare` for the pseudonymized workspace workflow.
 
 ## Repository Structure
 

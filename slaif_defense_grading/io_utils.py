@@ -7,7 +7,7 @@ import zipfile
 from pathlib import Path
 from typing import List
 
-from .models import DOCUMENT_SUFFIXES, PDF_SUFFIX, READABLE_FILENAMES, READABLE_SUFFIXES
+from .models import DOCUMENT_SUFFIXES, READABLE_FILENAMES, READABLE_SUFFIXES
 
 
 def eprint(*args: object, **kwargs: object) -> None:
@@ -67,39 +67,10 @@ def list_readable_files(extracted_dir: Path) -> List[Path]:
     return files
 
 
-def list_pdf_files(extracted_dir: Path) -> List[Path]:
-    pdfs = [p for p in extracted_dir.rglob("*") if p.is_file() and p.suffix.lower() == PDF_SUFFIX]
-    pdfs.sort(key=lambda x: x.as_posix().lower())
-    return pdfs
-
-
 def list_document_files(extracted_dir: Path) -> List[Path]:
     documents = [p for p in extracted_dir.rglob("*") if p.is_file() and p.suffix.lower() in DOCUMENT_SUFFIXES]
     documents.sort(key=lambda x: x.as_posix().lower())
     return documents
-
-
-def write_partial_concatenation(extracted_dir: Path, out_path: Path) -> int:
-    readable_files = list_readable_files(extracted_dir)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with out_path.open("w", encoding="utf-8", newline="\n") as out:
-        if not readable_files:
-            out.write("==== BEGIN (no_readable_files_found) ====\n")
-            out.write("No readable source files were found inside this submission.\n")
-            out.write("==== END (no_readable_files_found) ====\n")
-            return 0
-
-        for fp in readable_files:
-            rel = fp.relative_to(extracted_dir).as_posix()
-            out.write(f"==== BEGIN {rel} ====\n")
-            content = decode_text_file(fp)
-            out.write(content)
-            if not content.endswith("\n"):
-                out.write("\n")
-            out.write(f"==== END {rel} ====\n\n")
-
-    return len(readable_files)
 
 
 def unique_path(path: Path) -> Path:

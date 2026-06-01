@@ -1,5 +1,7 @@
 # Quickstart
 
+This workflow prepares oral-defense questions for submissions completed outside direct supervision.
+
 This guide runs the full local workflow:
 
 1. prepare a pseudonymized workspace;
