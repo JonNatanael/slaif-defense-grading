@@ -52,6 +52,20 @@ Boris,Kovac
 
 Optional columns such as `email` and `student_id` are preserved in the private pseudonym map. The real input roster is not copied into the agent workspace.
 
+Opaque binary documents are excluded by default. To explicitly include them under pseudonymized filenames:
+
+```bash
+python slaif-defense-grading.py prepare \
+  --input-file moodle_export.zip \
+  --students-csv students.csv \
+  --task-file task.tex \
+  --workspace workspace/lab-03-agent \
+  --private-output workspace/lab-03-private \
+  --include-opaque-documents
+```
+
+Use this flag only when the instructor accepts the privacy tradeoff. It weakens the workspace privacy guarantee because internal document content and metadata are not redacted.
+
 ## Generated Outputs
 
 Agent-facing workspace:
@@ -62,7 +76,6 @@ workspace/lab-03-agent/
   task.tex
   process.sh
   Student_0001.txt
-  Student_0001__document_001.pdf
 ```
 
 Private instructor-only output:
@@ -95,9 +108,13 @@ Unmatched LMS folders are not copied into the workspace. They are listed in the 
 
 Text/source files are concatenated into pseudonymized files such as `Student_0001.txt`. Known roster full names, emails, and `student_id` values are scrubbed from generated text outputs before privacy checks run.
 
-Before finishing, the command checks generated workspace filenames and generated text files for real full names, emails, and student IDs from the roster. If a leak is found, the command fails.
+Text-like files eligible for concatenation and scrubbing include `.txt`, `.py`, `.m`, `.c`, `.h`, `.cpp`, `.hpp`, `.ipynb`, `.md`, and `.tex`. Notebooks are treated as text JSON; this tool does not do notebook-aware parsing yet.
 
-Binary document files such as `.pdf`, `.docx`, `.doc`, `.odt`, and `.rtf` may be copied with pseudonymized filenames. Their internal content is not inspected or redacted in this PR, so the private report includes a warning when documents are copied.
+Before finishing, the command checks generated workspace filenames and generated text-like files for real full names, emails, and student IDs from the roster. If a leak is found, the command fails.
+
+Opaque document files such as `.pdf`, `.docx`, `.doc`, `.odt`, and `.rtf` are excluded from the workspace by default because this lightweight tool cannot safely pseudonymize their internal content or metadata. Their existence is listed in the private `preprocessing_report.md`.
+
+If `--include-opaque-documents` is used, opaque documents are copied under pseudonymized filenames such as `Student_0001__document_001.pdf`. The private report repeats the caveat that internal content and metadata may still contain real identities. The safest default workspace contains only text that the tool can scrub and verify.
 
 ## Legacy Command
 

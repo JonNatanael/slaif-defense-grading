@@ -23,8 +23,24 @@ def build_synthetic_moodle_zip(path: Path) -> None:
             'print("Ana Novak")\nprint("ana.novak@example.invalid")\nprint("63240001")\n',
         )
         zf.writestr(
+            "Ana Novak_12345_assignsubmission_file/notes.md",
+            "# Ana Novak\nEmail: ana.novak@example.invalid\nID: 63240001\n",
+        )
+        zf.writestr(
             "Ana Novak_12345_assignsubmission_file/Ana Novak report.pdf",
             b"%PDF-1.4 synthetic document with an internal name",
+        )
+        zf.writestr(
+            "Ana Novak_12345_assignsubmission_file/Ana Novak worksheet.docx",
+            b"synthetic docx with an internal name",
+        )
+        zf.writestr(
+            "Ana Novak_12345_assignsubmission_file/Ana Novak notes.odt",
+            b"synthetic odt with an internal name",
+        )
+        zf.writestr(
+            "Ana Novak_12345_assignsubmission_file/Ana Novak comments.rtf",
+            b"synthetic rtf with an internal name",
         )
         zf.writestr(
             "Unmatched Person_999_assignsubmission_file/main.py",
@@ -32,7 +48,7 @@ def build_synthetic_moodle_zip(path: Path) -> None:
         )
 
 
-def run_prepare(tmp_path: Path) -> tuple[Path, Path, subprocess.CompletedProcess[str]]:
+def run_prepare(tmp_path: Path, include_opaque_documents: bool = False) -> tuple[Path, Path, subprocess.CompletedProcess[str]]:
     students_csv = tmp_path / "students.csv"
     task_file = tmp_path / "task.tex"
     input_zip = tmp_path / "moodle_export.zip"
@@ -48,22 +64,26 @@ def run_prepare(tmp_path: Path) -> tuple[Path, Path, subprocess.CompletedProcess
     write_text(task_file, "\\section{Synthetic Task}\n")
     build_synthetic_moodle_zip(input_zip)
 
+    command = [
+        sys.executable,
+        "slaif-defense-grading.py",
+        "prepare",
+        "--input-file",
+        str(input_zip),
+        "--students-csv",
+        str(students_csv),
+        "--task-file",
+        str(task_file),
+        "--workspace",
+        str(workspace),
+        "--private-output",
+        str(private_output),
+    ]
+    if include_opaque_documents:
+        command.append("--include-opaque-documents")
+
     result = subprocess.run(
-        [
-            sys.executable,
-            "slaif-defense-grading.py",
-            "prepare",
-            "--input-file",
-            str(input_zip),
-            "--students-csv",
-            str(students_csv),
-            "--task-file",
-            str(task_file),
-            "--workspace",
-            str(workspace),
-            "--private-output",
-            str(private_output),
-        ],
+        command,
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -84,6 +104,7 @@ def test_prepare_help_works() -> None:
     assert result.returncode == 0
     assert "--students-csv" in result.stdout
     assert "--private-output" in result.stdout
+    assert "--include-opaque-documents" in result.stdout
 
 
 def test_prepare_creates_pseudonymized_workspace_and_private_outputs(tmp_path: Path) -> None:
@@ -111,7 +132,11 @@ def test_prepare_creates_pseudonymized_workspace_and_private_outputs(tmp_path: P
     assert "Ana Novak" not in student_text
     assert "ana.novak@example.invalid" not in student_text
     assert "63240001" not in student_text
-    assert (workspace / "Student_0001__document_001.pdf").exists()
+    assert "==== BEGIN Student 0001 | submission | notes.md ====" in student_text
+    assert not list(workspace.glob("*.pdf"))
+    assert not list(workspace.glob("*.docx"))
+    assert not list(workspace.glob("*.odt"))
+    assert not list(workspace.glob("*.rtf"))
     assert not (workspace / "Unmatched_Person.txt").exists()
 
     map_path = private_output / "pseudonym_map.csv"
@@ -130,7 +155,32 @@ def test_prepare_creates_pseudonymized_workspace_and_private_outputs(tmp_path: P
     assert "Matched students: 1" in report
     assert "Students without submissions: 1" in report
     assert "Unmatched Person_999_assignsubmission_file" in report
-    assert "Binary document files were copied with pseudonymized filenames" in report
+    assert "excluded from the workspace by default" in report
+    assert "cannot safely pseudonymize their internal content or metadata" in report
+    assert "Ana Novak report.pdf" in report
+    assert "Ana Novak worksheet.docx" in report
+    assert "Ana Novak notes.odt" in report
+    assert "Ana Novak comments.rtf" in report
+    assert "Original matched LMS folder: `Ana Novak_12345_assignsubmission_file`" in report
+    assert "Workspace text output: `Student_0001.txt`" in report
+
+
+def test_prepare_can_explicitly_include_opaque_documents_with_warning(tmp_path: Path) -> None:
+    workspace, private_output, result = run_prepare(tmp_path, include_opaque_documents=True)
+
+    assert result.returncode == 0, result.stderr
+    copied_names = sorted(path.name for path in workspace.iterdir() if path.suffix in {".pdf", ".docx", ".odt", ".rtf"})
+    assert len(copied_names) == 4
+    assert {Path(name).suffix for name in copied_names} == {".pdf", ".docx", ".odt", ".rtf"}
+    for name in copied_names:
+        assert name.startswith("Student_0001__document_")
+        assert "Ana Novak" not in name
+
+    report = (private_output / "preprocessing_report.md").read_text(encoding="utf-8")
+    assert "Opaque document inclusion was explicitly enabled" in report
+    assert "internal content and metadata were not inspected or redacted" in report
+    assert "Student_0001__document_" in report
+    assert "Excluded opaque documents: none" in report
 
 
 def test_workspace_generated_text_and_filenames_do_not_contain_real_identifiers(tmp_path: Path) -> None:
@@ -149,7 +199,7 @@ def test_workspace_generated_text_and_filenames_do_not_contain_real_identifiers(
         rel = path.relative_to(workspace).as_posix()
         for value in forbidden:
             assert value not in rel
-        if path.is_file() and path.suffix in {".txt", ".csv", ".sh"}:
+        if path.is_file() and path.suffix in {".txt", ".csv", ".sh", ".tex", ".md", ".py", ".m", ".c", ".h", ".cpp", ".hpp", ".ipynb"}:
             text = path.read_text(encoding="utf-8")
             for value in forbidden:
                 assert value not in text

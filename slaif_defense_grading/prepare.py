@@ -17,6 +17,7 @@ from .core import (
     stage_zip_with_sibling_files,
 )
 from .io_utils import decode_text_file, list_document_files, list_readable_files, unique_path
+from .models import DOCUMENT_SUFFIXES, READABLE_SUFFIXES
 from .process_script import render_process_script
 
 
@@ -54,6 +55,18 @@ class PrepareResult:
     missing_count: int
     unmatched_folders: List[str]
     copied_documents: List[Path]
+    excluded_documents: List[str]
+    manifest_entries: List["ManifestEntry"]
+    include_opaque_documents: bool
+
+
+@dataclass
+class ManifestEntry:
+    original_folder: str
+    pseudonym: str
+    text_output: str
+    copied_opaque_documents: List[str]
+    excluded_opaque_documents: List[str]
 
 
 def normalize_identity(value: str) -> str:
@@ -222,6 +235,14 @@ def write_pseudonymized_text_output(
     return output_path
 
 
+def opaque_document_relative_paths(extracted_dirs: Sequence[Path]) -> List[str]:
+    documents: List[str] = []
+    for extracted_dir in extracted_dirs:
+        for source in list_document_files(extracted_dir):
+            documents.append(source.relative_to(extracted_dir).as_posix())
+    return sorted(documents, key=str.casefold)
+
+
 def copy_pseudonymized_documents(student: RosterStudent, extracted_dirs: Sequence[Path], workspace: Path) -> List[Path]:
     copied: List[Path] = []
     document_number = 1
@@ -282,21 +303,55 @@ def write_preprocessing_report(
         ]
     )
 
+    if result.excluded_documents:
+        lines.extend(
+            [
+                "- Opaque documents were excluded from the workspace by default because this tool cannot safely pseudonymize their internal content or metadata.",
+                "",
+                "## Excluded Opaque Documents",
+                "",
+            ]
+        )
+        lines.extend(f"- `{path}`" for path in result.excluded_documents)
+
     if result.copied_documents:
         lines.extend(
             [
-                "- Binary document files were copied with pseudonymized filenames. Their internal content was not inspected or redacted and may still contain real identities.",
+                "- Opaque document inclusion was explicitly enabled. These files were copied with pseudonymized filenames only; internal content and metadata were not inspected or redacted and may still contain real identities.",
                 "",
-                "## Copied Binary Documents",
+                "## Copied Opaque Documents",
                 "",
             ]
         )
         lines.extend(f"- `{path.name}`" for path in result.copied_documents)
 
+    lines.extend(["", "## Matched Folder Manifest", ""])
+    if result.manifest_entries:
+        for entry in result.manifest_entries:
+            lines.extend(
+                [
+                    f"### {entry.pseudonym}",
+                    "",
+                    f"- Original matched LMS folder: `{entry.original_folder}`",
+                    f"- Workspace text output: `{entry.text_output}`",
+                    "- Copied opaque documents: "
+                    + (", ".join(f"`{path}`" for path in entry.copied_opaque_documents) if entry.copied_opaque_documents else "none"),
+                    "- Excluded opaque documents: "
+                    + (
+                        ", ".join(f"`{path}`" for path in entry.excluded_opaque_documents)
+                        if entry.excluded_opaque_documents
+                        else "none"
+                    ),
+                    "",
+                ]
+            )
+    else:
+        lines.append("- None")
+
     report.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def leak_check_workspace(workspace: Path, students: Sequence[RosterStudent]) -> None:
+def leak_check_workspace(workspace: Path, students: Sequence[RosterStudent], include_opaque_documents: bool) -> None:
     identifiers: List[str] = []
     for student in students:
         identifiers.extend([student.full_name, f"{student.name} {student.surname}"])
@@ -306,13 +361,16 @@ def leak_check_workspace(workspace: Path, students: Sequence[RosterStudent]) -> 
                 identifiers.append(value)
 
     identifiers = sorted({value for value in identifiers if value.strip()}, key=len, reverse=True)
-    text_suffixes = {".txt", ".csv", ".sh"}
+    text_suffixes = {*READABLE_SUFFIXES, ".csv", ".sh"}
 
     for path in sorted(workspace.rglob("*"), key=lambda p: p.as_posix().casefold()):
         rel_name = path.relative_to(workspace).as_posix()
         for identifier in identifiers:
             if identifier.casefold() in rel_name.casefold():
                 raise ValueError(f"privacy leak detected in workspace filename: {rel_name}")
+
+        if path.is_file() and not include_opaque_documents and path.suffix.lower() in DOCUMENT_SUFFIXES:
+            raise ValueError(f"opaque document was written without explicit opt-in: {rel_name}")
 
         if path.is_file() and path.suffix.lower() in text_suffixes:
             text = path.read_text(encoding="utf-8", errors="replace")
@@ -329,6 +387,7 @@ def prepare_workspace(
     workspace: Path,
     private_output: Path,
     template_path: Path,
+    include_opaque_documents: bool = False,
 ) -> PrepareResult:
     students = read_roster(students_csv)
     roster_by_identity = {normalize_identity(f"{student.name} {student.surname}"): student for student in students}
@@ -358,6 +417,8 @@ def prepare_workspace(
     matched_students: Dict[int, RosterStudent] = {}
     unmatched_folders: List[str] = []
     copied_documents: List[Path] = []
+    excluded_documents: List[str] = []
+    manifest_entries: List[ManifestEntry] = []
 
     with tempfile.TemporaryDirectory(dir="/tmp", prefix="slaif-defense-grading_prepare_") as tmp:
         tmpdir = Path(tmp)
@@ -378,8 +439,27 @@ def prepare_workspace(
 
             extracted_dirs = discover_submission_dirs(student_folder_path, outer_extract, unzipped_root)
             matched_students[student.row_number] = student
-            write_pseudonymized_text_output(student, extracted_dirs, workspace, students)
-            copied_documents.extend(copy_pseudonymized_documents(student, extracted_dirs, workspace))
+            text_output = write_pseudonymized_text_output(student, extracted_dirs, workspace, students)
+            opaque_documents = opaque_document_relative_paths(extracted_dirs)
+            copied_for_student: List[Path] = []
+            excluded_for_student: List[str] = []
+
+            if include_opaque_documents:
+                copied_for_student = copy_pseudonymized_documents(student, extracted_dirs, workspace)
+                copied_documents.extend(copied_for_student)
+            else:
+                excluded_for_student = opaque_documents
+                excluded_documents.extend(f"{student_folder_path.name}/{path}" for path in opaque_documents)
+
+            manifest_entries.append(
+                ManifestEntry(
+                    original_folder=student_folder_path.name,
+                    pseudonym=student.pseudonym,
+                    text_output=text_output.name,
+                    copied_opaque_documents=[path.name for path in copied_for_student],
+                    excluded_opaque_documents=excluded_for_student,
+                )
+            )
 
     result = PrepareResult(
         roster_count=len(students),
@@ -387,7 +467,10 @@ def prepare_workspace(
         missing_count=len(students) - len(matched_students),
         unmatched_folders=unmatched_folders,
         copied_documents=copied_documents,
+        excluded_documents=excluded_documents,
+        manifest_entries=manifest_entries,
+        include_opaque_documents=include_opaque_documents,
     )
     write_preprocessing_report(private_output, result)
-    leak_check_workspace(workspace, students)
+    leak_check_workspace(workspace, students, include_opaque_documents)
     return result
