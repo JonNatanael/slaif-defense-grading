@@ -2,6 +2,8 @@
 
 This file is for the later grading/oral-verification agent working inside this generated pseudonymized workspace.
 
+Your job is to generate oral-verification questions tied to the target student's submitted files. The goal is to help the instructor check whether the student understands work completed outside direct supervision.
+
 Preprocessing, roster matching, pseudonym mapping, `associations.csv` generation, and `process.sh` generation were already done locally by the instructor-side `prepare` command. Do not redo preprocessing and do not modify the private mapping.
 
 Operate only in the current pseudonymized workspace. Do not infer, request, or reconstruct real student identities.
@@ -71,7 +73,7 @@ Student 0001/report_aspects.md
 
 Create instructor-facing oral-verification material in Slovenian.
 
-Do not accuse AI use, plagiarism, or cheating. Do not generate generic theory questions detached from the submitted work.
+Do not accuse AI use, plagiarism, unauthorized collaboration, or cheating. Do not generate generic theory questions detached from the submitted work.
 
 Use `report_aspects_template.md` as the mandatory output template for `report_aspects.md`. Preserve the headings and template structure exactly. Do not change the section names.
 
