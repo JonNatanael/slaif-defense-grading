@@ -22,7 +22,7 @@ Preprocessing is run locally by the instructor:
 python3 slaif-defense-grading.py prepare \
   --input-file moodle_export.zip \
   --students-csv students.csv \
-  --task-file task.tex \
+  --task-file assignment.pdf \
   --workspace workspace/lab-agent \
   --private-output workspace/lab-private
 ```
@@ -33,7 +33,7 @@ Multiple ZIP exports are supported with one `--input-file` argument followed by 
 python3 slaif-defense-grading.py prepare \
   --input-file export1.zip export2.zip \
   --students-csv students.csv \
-  --task-file task.tex \
+  --task-file assignment.pdf \
   --workspace workspace/lab-agent \
   --private-output workspace/lab-private
 ```
@@ -46,7 +46,7 @@ python3 slaif-defense-grading.py prepare \
 - creates a pseudonymized agent workspace;
 - writes private `pseudonym_map.csv` outside the workspace;
 - writes private `preprocessing_report.md` outside the workspace;
-- copies `task.tex` into the workspace;
+- copies the assignment into the workspace with a canonical `task.*` filename, such as `task.tex` or `task.pdf`;
 - generates pseudonymized `students.csv`;
 - generates pseudonymized `associations.csv`;
 - copies `templates/workspace/AGENTS.md` into the workspace as `AGENTS.md`;
@@ -71,7 +71,7 @@ lab-agent/
   process.sh
   report_aspects_template.md
   students.csv
-  task.tex
+  task.pdf
 ```
 
 Private instructor-only output:
@@ -95,6 +95,8 @@ Student,0002,Student 0002
 ```
 
 `associations.csv` is generated locally by `prepare`. It maps each pseudonymized student to pseudonymized workspace filenames and never contains real names, emails, student IDs, or original LMS folder names.
+
+The instructor assignment file is copied under a canonical non-private workspace name. For example, `assignment.pdf` becomes `task.pdf`, `task.tex` remains `task.tex`, and other suffixes become `task<suffix>`. The original assignment basename is not preserved.
 
 `report_aspects_template.md` defines the mandatory structure for every generated `report_aspects.md`. The generated workspace `AGENTS.md` instructs the later grading agent to follow this template and preserve its headings.
 
@@ -151,7 +153,7 @@ There are two different `AGENTS.md` files:
 - Root `AGENTS.md` is for coding agents modifying this repository.
 - Generated workspace `AGENTS.md` is copied from `templates/workspace/AGENTS.md` and is for the later oral-verification/grading agent inside the pseudonymized workspace.
 
-Preprocessing is not an agent task. The later agent should use `students.csv`, `associations.csv`, and `task.tex`, and should treat only files listed in `associations.csv` as student submissions.
+Preprocessing is not an agent task. The later agent should use `students.csv`, `associations.csv`, and the generated assignment file (`task.tex`, `task.pdf`, or another `task.*`), and should treat only files listed in `associations.csv` as student submissions.
 
 There is no `.slaif_prompts/` directory.
 
@@ -188,13 +190,15 @@ Opaque document files are excluded by default:
 
 They are excluded because this lightweight tool does not redact internal document content or metadata. Their existence is recorded in `private-output/preprocessing_report.md`.
 
+This default exclusion applies to student-submitted opaque documents. The instructor-provided assignment may still be a PDF and is copied as `task.pdf`.
+
 To explicitly include opaque documents under pseudonymized filenames:
 
 ```bash
 python3 slaif-defense-grading.py prepare \
   --input-file moodle_export.zip \
   --students-csv students.csv \
-  --task-file task.tex \
+  --task-file assignment.pdf \
   --workspace workspace/lab-agent \
   --private-output workspace/lab-private \
   --include-opaque-documents

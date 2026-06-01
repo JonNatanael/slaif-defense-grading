@@ -12,17 +12,19 @@ Use these workspace files:
 
 - `students.csv` contains the pseudonymized roster.
 - `associations.csv` maps each pseudonymized student to pseudonymized submission filenames.
-- `task.tex` contains the assignment.
+- `task.*` contains the assignment, usually `task.tex` or `task.pdf`.
 - `report_aspects_template.md` defines the mandatory report structure.
 
 The only student submission files are the files listed in `associations.csv`.
+
+If the generated task file is `task.pdf`, read it as PDF. Use the generated task file only as the assignment context.
 
 Do not treat these files or directories as submissions:
 
 - `AGENTS.md`
 - `students.csv`
 - `associations.csv`
-- `task.tex`
+- `task.*`
 - `report_aspects_template.md`
 - `process.sh`
 - already generated report folders
@@ -49,7 +51,7 @@ For comparison:
 
 - Compare the target submission package against all other students with resolved associations in `associations.csv`.
 - Use all files listed for those other students.
-- Use `task.tex` to avoid treating assignment-required overlap as distinctive.
+- Use the generated assignment file, usually `task.tex` or `task.pdf`, to avoid treating assignment-required overlap as distinctive.
 
 Do not use filenames, folders, or content outside `associations.csv` as student submissions.
 
@@ -95,7 +97,7 @@ Do not modify preprocessing files:
 - `AGENTS.md`
 - `students.csv`
 - `associations.csv`
-- `task.tex`
+- `task.*`
 - `report_aspects_template.md`
 - `process.sh`
 

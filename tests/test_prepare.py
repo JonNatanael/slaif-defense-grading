@@ -58,6 +58,11 @@ def write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8", newline="\n")
 
 
+def write_bytes(path: Path, content: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+
+
 def build_synthetic_moodle_zip(path: Path) -> None:
     with zipfile.ZipFile(path, "w") as zf:
         zf.writestr(
@@ -197,9 +202,13 @@ def relative_workspace_tree(workspace: Path) -> str:
     )
 
 
-def run_prepare(tmp_path: Path, include_opaque_documents: bool = False) -> tuple[Path, Path, subprocess.CompletedProcess[str]]:
+def run_prepare(
+    tmp_path: Path,
+    include_opaque_documents: bool = False,
+    task_suffix: str = ".tex",
+) -> tuple[Path, Path, subprocess.CompletedProcess[str]]:
     students_csv = tmp_path / "students.csv"
-    task_file = tmp_path / "task.tex"
+    task_file = tmp_path / f"assignment{task_suffix}"
     input_zip = tmp_path / "moodle_export.zip"
     workspace = tmp_path / "workspace" / "lab-agent"
     private_output = tmp_path / "workspace" / "lab-private"
@@ -210,7 +219,10 @@ def run_prepare(tmp_path: Path, include_opaque_documents: bool = False) -> tuple
         "Ana,Novak,ana.novak@example.invalid,63240001\n"
         "Boris,Kovac,boris.kovac@example.invalid,63240002\n",
     )
-    write_text(task_file, "\\section{Synthetic Task}\n")
+    if task_suffix == ".pdf":
+        write_bytes(task_file, b"%PDF-1.4 synthetic assignment\n")
+    else:
+        write_text(task_file, "\\section{Synthetic Task}\n")
     build_synthetic_moodle_zip(input_zip)
 
     command = [
@@ -290,6 +302,9 @@ def test_report_template_exists_and_readme_documents_pilot_outputs() -> None:
     assert "student_outputs/" in readme
     assert "student_outputs_index.csv" in readme
     assert "--include-opaque-documents" in readme
+    assert "--task-file assignment.pdf" in readme
+    assert "task.pdf" in readme
+    assert "task.*" in readme
 
 
 def test_quickstart_documents_complete_workflow() -> None:
@@ -303,6 +318,8 @@ def test_quickstart_documents_complete_workflow() -> None:
     assert "instructor_reports/<Name>/report_aspects.md" in text
     assert "Do not send it wholesale to students" in text
     assert "--include-opaque-documents" in text
+    assert "--task-file assignment.pdf" in text
+    assert "task.pdf" in text
 
 
 def test_finalize_collects_named_outputs_and_missing_reports(tmp_path: Path) -> None:
@@ -437,6 +454,7 @@ def test_prepare_creates_pseudonymized_workspace_and_private_outputs(tmp_path: P
         "Student,0002,Student 0002\n"
     )
     assert (workspace / "task.tex").read_text(encoding="utf-8") == "\\section{Synthetic Task}\n"
+    assert not (workspace / "task.pdf").exists()
 
     process_sh = workspace / "process.sh"
     process_text = process_sh.read_text(encoding="utf-8")
@@ -460,7 +478,8 @@ def test_prepare_creates_pseudonymized_workspace_and_private_outputs(tmp_path: P
     assert "Run oral-verification report for Student 0001" in agents_text
     assert "students.csv" in agents_text
     assert "associations.csv" in agents_text
-    assert "task.tex" in agents_text
+    assert "task.*" in agents_text
+    assert "task.pdf" in agents_text
     assert "report_aspects_template.md" in agents_text
     assert "Use `report_aspects_template.md` as the mandatory output template" in agents_text
     assert "Preserve the headings and template structure exactly" in agents_text
@@ -602,6 +621,41 @@ def test_prepare_can_explicitly_include_opaque_documents_with_warning(tmp_path: 
         assert value not in (workspace / "associations.csv").read_text(encoding="utf-8")
 
 
+def test_prepare_preserves_pdf_task_file_type_without_including_student_pdfs(tmp_path: Path) -> None:
+    workspace, private_output, result = run_prepare(tmp_path, task_suffix=".pdf")
+
+    assert result.returncode == 0, result.stderr
+    assert (workspace / "task.pdf").read_bytes() == b"%PDF-1.4 synthetic assignment\n"
+    assert not (workspace / "task.tex").exists()
+
+    workspace_pdfs = sorted(path.name for path in workspace.glob("*.pdf"))
+    assert workspace_pdfs == ["task.pdf"]
+    assert not list(workspace.glob("*.docx"))
+    assert not list(workspace.glob("*.odt"))
+    assert not list(workspace.glob("*.rtf"))
+
+    with (workspace / "associations.csv").open("r", encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert rows[0]["associated_txt_files"] == "Student_0001.txt"
+    assert rows[0]["associated_document_files"] == ""
+    assert rows[0]["all_associated_files"] == "Student_0001.txt"
+
+    associations_text = (workspace / "associations.csv").read_text(encoding="utf-8")
+    assert "task.pdf" not in associations_text
+    for value in FORBIDDEN_IDENTIFIERS:
+        assert value not in associations_text
+
+    agents_text = (workspace / "AGENTS.md").read_text(encoding="utf-8")
+    assert "task.*" in agents_text
+    assert "task.pdf" in agents_text
+    assert "read it as PDF" in agents_text
+    assert "task.tex` contains the assignment" not in agents_text
+
+    report = (private_output / "preprocessing_report.md").read_text(encoding="utf-8")
+    assert "Ana Novak report.pdf" in report
+    assert "excluded from the workspace by default" in report
+
+
 def test_messy_prepare_default_mode_end_to_end_audit(tmp_path: Path) -> None:
     workspace, private_output, result = run_messy_prepare(tmp_path)
     tree = relative_workspace_tree(workspace)
@@ -611,6 +665,7 @@ def test_messy_prepare_default_mode_end_to_end_audit(tmp_path: Path) -> None:
     assert (workspace / "students.csv").exists(), tree
     assert (workspace / "associations.csv").exists(), tree
     assert (workspace / "task.tex").read_text(encoding="utf-8").startswith("\\section{Synthetic Messy Assignment}"), tree
+    assert not (workspace / "task.pdf").exists(), tree
     assert (workspace / "report_aspects_template.md").exists(), tree
     assert (workspace / "process.sh").exists(), tree
     assert not (workspace / ".slaif_prompts").exists(), tree
@@ -639,7 +694,8 @@ def test_messy_prepare_default_mode_end_to_end_audit(tmp_path: Path) -> None:
     assert agents_text == (REPO_ROOT / "templates" / "workspace" / "AGENTS.md").read_text(encoding="utf-8")
     assert "students.csv" in agents_text
     assert "associations.csv" in agents_text
-    assert "task.tex" in agents_text
+    assert "task.*" in agents_text
+    assert "task.pdf" in agents_text
     assert "report_aspects_template.md" in agents_text
     assert "The only student submission files are the files listed in `associations.csv`." in agents_text
     assert "Preserve the headings and template structure exactly" in agents_text

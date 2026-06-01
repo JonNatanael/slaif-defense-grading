@@ -116,6 +116,11 @@ def is_relative_to(path: Path, parent: Path) -> bool:
     return True
 
 
+def workspace_task_filename(task_file: Path) -> str:
+    suffix = task_file.suffix.lower()
+    return f"task{suffix}" if suffix else "task"
+
+
 def read_roster(students_csv: Path) -> List[RosterStudent]:
     with students_csv.open("r", encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
@@ -479,6 +484,7 @@ def leak_check_workspace(
     students: Sequence[RosterStudent],
     include_opaque_documents: bool,
     extra_private_identifiers: Sequence[str] = (),
+    allowed_opaque_paths: Sequence[Path] = (),
 ) -> None:
     identifiers: List[str] = []
     for student in students:
@@ -491,6 +497,11 @@ def leak_check_workspace(
     identifiers.extend(extra_private_identifiers)
     identifiers = sorted({value for value in identifiers if value.strip()}, key=len, reverse=True)
     text_suffixes = {*READABLE_SUFFIXES, ".csv", ".sh"}
+    allowed_opaque_rel_paths = {
+        path.relative_to(workspace).as_posix()
+        for path in allowed_opaque_paths
+        if is_relative_to(path, workspace)
+    }
 
     for path in sorted(workspace.rglob("*"), key=lambda p: p.as_posix().casefold()):
         rel_name = path.relative_to(workspace).as_posix()
@@ -498,7 +509,12 @@ def leak_check_workspace(
             if identifier.casefold() in rel_name.casefold():
                 raise ValueError(f"privacy leak detected in workspace filename: {rel_name}")
 
-        if path.is_file() and not include_opaque_documents and path.suffix.lower() in DOCUMENT_SUFFIXES:
+        if (
+            path.is_file()
+            and not include_opaque_documents
+            and path.suffix.lower() in DOCUMENT_SUFFIXES
+            and rel_name not in allowed_opaque_rel_paths
+        ):
             raise ValueError(f"opaque document was written without explicit opt-in: {rel_name}")
 
         if path.is_file() and path.suffix.lower() in text_suffixes:
@@ -543,12 +559,13 @@ def prepare_workspace(
 
     workspace.mkdir(parents=True, exist_ok=True)
     private_output.mkdir(parents=True, exist_ok=True)
+    task_workspace_path = workspace / workspace_task_filename(task_file)
 
     write_workspace_students_csv(students, workspace)
     write_private_pseudonym_map(students, private_output)
     shutil.copy2(workspace_agents_template, workspace / "AGENTS.md")
     shutil.copy2(report_template, workspace / "report_aspects_template.md")
-    shutil.copy2(task_file, workspace / "task.tex")
+    shutil.copy2(task_file, task_workspace_path)
 
     matched_students: Dict[int, RosterStudent] = {}
     unmatched_folders: List[str] = []
@@ -625,5 +642,11 @@ def prepare_workspace(
     write_preprocessing_report(private_output, result)
     private_identifiers = [entry.original_folder for entry in manifest_entries]
     private_identifiers.extend(unmatched_folders)
-    leak_check_workspace(workspace, students, include_opaque_documents, private_identifiers)
+    leak_check_workspace(
+        workspace,
+        students,
+        include_opaque_documents,
+        private_identifiers,
+        allowed_opaque_paths=[task_workspace_path],
+    )
     return result
