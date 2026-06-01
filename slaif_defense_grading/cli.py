@@ -132,6 +132,14 @@ def add_prepare_arguments(parser: argparse.ArgumentParser) -> None:
         required=True,
         help="Private output directory for pseudonym_map.csv and preprocessing_report.md. Must be outside --workspace.",
     )
+    parser.add_argument(
+        "--include-opaque-documents",
+        action="store_true",
+        help=(
+            "Opt in to copying opaque documents such as PDF/DOCX/DOC/ODT/RTF under pseudonymized filenames. "
+            "This weakens the privacy guarantee because internal content and metadata are not redacted."
+        ),
+    )
 
 
 def build_legacy_parser() -> argparse.ArgumentParser:
@@ -177,6 +185,7 @@ def run_prepare(args: argparse.Namespace) -> int:
             workspace=workspace,
             private_output=private_output,
             template_path=template_path,
+            include_opaque_documents=args.include_opaque_documents,
         )
     except Exception as exc:  # noqa: BLE001
         eprint(f"ERROR: prepare failed: {exc}")
