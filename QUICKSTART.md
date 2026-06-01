@@ -12,7 +12,7 @@ Prepare these local files:
 
 - Moodle/Canvas export ZIP, for example `moodle_export.zip`;
 - real local `students.csv` with at least `name,surname`;
-- assignment file `task.tex`.
+- assignment file, for example `assignment.pdf` or `task.tex`.
 
 Do not commit real rosters, submission ZIPs, generated workspaces, private mappings, or final outputs.
 
@@ -30,10 +30,12 @@ pip install -r requirements.txt
 python3 slaif-defense-grading.py prepare \
   --input-file moodle_export.zip \
   --students-csv students.csv \
-  --task-file task.tex \
+  --task-file assignment.pdf \
   --workspace work/lab-agent \
   --private-output work/lab-private
 ```
+
+The assignment is copied into the workspace under a canonical name such as `task.pdf` or `task.tex`; the original basename is not preserved.
 
 Default mode excludes opaque documents such as PDF/DOCX/DOC/ODT/RTF because their internal content and metadata are not redacted.
 
@@ -49,6 +51,8 @@ work/lab-private/preprocessing_report.md
 ```
 
 `work/lab-agent/` should contain no real names, emails, student IDs, or original LMS folder names. The private report may contain real matching details and must remain local.
+
+The workspace should contain the generated assignment file, usually `task.pdf` or `task.tex`.
 
 ## Run Agent
 
