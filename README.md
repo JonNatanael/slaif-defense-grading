@@ -1,178 +1,165 @@
-# lab-grading
+# slaif-defense-grading
 
-`preprocess-labs.py` is a command-line utility for turning a **master ZIP of student submissions** into readable concatenated text files for grading and review.
+`slaif-defense-grading` is a local command-line preprocessing tool for preparing lab-submission material for later human-led oral defense grading.
 
-It is designed for Moodle/Canvas-style exports where:
+SLAIF stands for Slovenian AI Factory.
 
-- You start with one or more ZIPs (the *master ZIP inputs*).
-- Inside it there is typically **one folder per student**, e.g. `Name Surname_16712_assignsubmission_file/`.
-- Inside each student folder there is usually either:
-  - one or more nested submission ZIP files, or
-  - submission subfolders that contain the submission files directly.
+This repository is for local instructor-side preprocessing. It is not an automatic grading system, not an AI detector, not a plagiarism accusation tool, and not a fully automatic decision-maker.
 
-The tool extracts/reads submissions, finds readable source files, wraps them with clear delimiters, and builds either one combined output file or one output file per student.
+## Privacy boundary
 
----
+The core safety boundary in this project is local pseudonymization.
 
-## What files are included
+- Real student identities may be used only during local preprocessing.
+- The later agent-facing workspace must contain only pseudonymized data.
+- The private mapping from real identities to pseudonyms must stay outside the agent workspace.
+- Do not commit real student rosters, submission ZIPs, generated outputs, or private mappings to this repository.
 
-The script includes only these suffixes (case-insensitive):
+The current prototype behavior retained in this cleanup PR still works on raw Moodle/Canvas-style exports and may derive labels from LMS folder names. That legacy behavior is preserved for continuity, but it is not the final privacy model.
 
-- `.txt`
-- `.m` (MATLAB)
-- `.py` (Python)
-- `.c`, `.h`, `.cpp`, `.hpp` (C/C++)
-- `.ipynb` (Jupyter notebook JSON)
+## Current behavior
 
-Additional filtering is applied:
-
-- Files that look binary are skipped, even if the suffix matches.
-- Text is decoded as UTF-8 with replacement (`errors="replace"`) for robustness with mixed encodings.
-
-PDF behavior:
-
-- `.pdf` files are **not** concatenated into text output.
-- In `--output-directory` mode, PDF files are copied verbatim next to each student's `.txt` output.
-  - If there is one PDF for a student, it is named `<student_output_basename>.pdf`.
-  - If there are multiple PDFs, they are named `<student_output_basename>-001.pdf`, `<student_output_basename>-002.pdf`, etc.
-
----
-
-## Output format
-
-Each included file is wrapped with BEGIN/END delimiters.
-
-In final outputs, delimiter lines include:
-
-1. Student name (inferred from the student folder name).
-2. Submission name (ZIP base name or submission folder name).
-3. Relative file path inside that submission.
-
-Example:
-
-```text
-==== BEGIN Jane Doe | submission1 | src/main.py ====
-... file content ...
-==== END Jane Doe | submission1 | src/main.py ====
-```
-
-If a submission contains no readable text files, a placeholder block is emitted for that submission.
-
----
-
-## How processing works
-
-### 1) Extract master ZIP
-
-The script creates a temporary working directory under `/tmp` and safely extracts each provided master ZIP there.
-
-If multiple ZIPs are provided, they are merged in argument order and **later ZIPs win** for duplicate students (same inferred student name from folder prefix before the first underscore).
-
-### 2) Discover submissions per student
-
-For each top-level student folder:
-
-- If nested ZIPs are found recursively, those ZIPs are used as submission sources.
-- If no nested ZIPs are found, direct subfolders are treated as submission sources.
-- If there are no subfolders but there are files directly in the student folder, the student folder itself is treated as a submission source.
-
-### 3) Build per-submission partial outputs
-
-For each submission source:
-
-- ZIP sources are extracted to a temp location.
-- Directory sources are read directly.
-- Readable files are concatenated into a per-submission `.txt` artifact with delimiters.
-
-### 4) Build final output(s)
-
-Then the script writes either:
-
-- a single global output file (`--output-file`), or
-- one output file per student in an output directory (`--output-directory`).
-
-When generating the final output, delimiter lines are augmented with student + submission metadata.
-
----
-
-## Command line usage
+Today, the canonical entrypoint is:
 
 ```bash
-python preprocess-labs.py \
+python slaif-defense-grading.py --help
+```
+
+The current CLI preserves the existing preprocessing behavior:
+
+- accepts one or more master ZIP exports;
+- safely extracts ZIP contents with path-traversal protection;
+- finds nested submission ZIPs or direct submission folders;
+- collects readable source files;
+- writes either one combined text output or one output per student;
+- optionally groups near-identical submissions;
+- copies PDFs alongside per-student outputs.
+
+This is still the old preprocessing flow. It has been renamed and reorganized, but not yet replaced by the planned pseudonymized workspace generator.
+
+## Planned direction
+
+The intended next-step interface is planned, not implemented in this PR:
+
+```bash
+python slaif-defense-grading.py prepare \
+  --input-file moodle_export.zip \
+  --students-csv students.csv \
+  --task-file task.tex \
+  --workspace workspace/lab-03-agent \
+  --private-output workspace/lab-03-private
+```
+
+Target output shape:
+
+```text
+workspace/lab-03-agent/
+  students.csv
+  task.tex
+  process.sh
+  Student_0001.txt
+  Student_0001__report.pdf
+
+workspace/lab-03-private/
+  pseudonym_map.csv
+  preprocessing_report.md
+```
+
+That planned workflow will:
+
+- keep the real `students.csv` local;
+- generate a pseudonymized workspace for later agent use;
+- render `process.sh` locally from a template;
+- avoid exposing real names in workspace filenames or workspace metadata.
+
+## Current command usage
+
+```bash
+python slaif-defense-grading.py \
   --input-file <MASTER1.zip> [<MASTER2.zip> ...] \
   (--output-file <OUTPUT.txt> | --output-directory <OUTPUT_DIR>) \
   [--similarity-check]
 ```
 
-### Arguments
+Arguments:
 
-- `-i, --input-file` (**required**): one or more paths to master ZIP files. When multiple ZIPs are provided, later ZIPs replace earlier submissions for duplicate students.
+- `-i, --input-file`: one or more master ZIP files.
 - `-o, --output-file`: write one combined output file.
 - `-d, --output-directory`: write one output file per student.
-- `--similarity-check`: before writing a single output file, compare submissions and merge near-identical ones into one entry that lists all matched student names.
+- `--similarity-check`: group near-identical submissions before building a combined output file.
 
-Notes:
-
-- `--output-file` and `--output-directory` are mutually exclusive.
-- One of them must be provided.
-- Similarity grouping currently uses a threshold of `0.98`.
-
----
-
-## Examples
-
-### Example A: single combined output
+Examples:
 
 ```bash
-python preprocess-labs.py \
-  --input-file data/2025/CV/Vaja5.zip \
-  --output-file data/2025/CV/outputs/vaja5.txt
-```
+mkdir -p work/outputs
 
-### Example B: merge two exports, where the second overrides duplicates
+python slaif-defense-grading.py \
+  --input-file work/inputs/lab-05-export.zip \
+  --output-file work/outputs/lab-05.txt
+```
 
 ```bash
-python preprocess-labs.py \
-  --input-file data/2025/CV/Vaja4.zip data/2025/CV/Vaja5.zip \
-  --output-file data/2025/CV/outputs/merged_vaja.txt
+mkdir -p work/outputs/lab-05
+
+python slaif-defense-grading.py \
+  --input-file work/inputs/lab-05-export.zip \
+  --output-directory work/outputs/lab-05
 ```
 
-### Example C: one output file per student
+Recommended local layout:
+
+```text
+work/
+  inputs/
+    lab-05-export.zip
+  outputs/
+    lab-05.txt
+```
+
+Keep `work/` outside Git history.
+
+## Lightweight repository structure
+
+This cleanup PR moves the repository toward this small structure:
+
+```text
+README.md
+AGENTS.md
+requirements.txt
+slaif-defense-grading.py
+
+slaif_defense_grading/
+  __init__.py
+  cli.py
+  core.py
+  io_utils.py
+  models.py
+
+templates/
+  process.sh.tpl
+
+tests/
+```
+
+The current package still retains the legacy processing modules while the broader pseudonymized-workspace refactor is pending.
+
+## Safety notes
+
+- ZIP extraction is guarded against path traversal.
+- Binary files are skipped from text concatenation.
+- Current legacy outputs may still include LMS-derived student labels, so run the tool only on local instructor-controlled data.
+- Use only synthetic data in tests and examples committed to this repository.
+
+## Development
+
+Install the minimal development dependency set:
 
 ```bash
-python preprocess-labs.py \
-  --input-file data/2025/CV/Vaja5.zip \
-  --output-directory data/2025/CV/outputs/vaja5
+pip install -r requirements.txt
 ```
 
-### Example D: combined output with similarity grouping
+Run tests:
 
 ```bash
-python preprocess-labs.py \
-  --input-file data/2025/CV/Vaja5.zip \
-  --output-file data/2025/CV/outputs/vaja5_grouped.txt \
-  --similarity-check
+pytest
 ```
-
-### Help
-
-```bash
-python preprocess-labs.py --help
-```
-
-If run with no arguments, the script prints help and exits successfully.
-
----
-
-## Temporary files and safety
-
-- Temporary files are created under `/tmp/preprocesslabs_*`.
-- Temporary directories are removed automatically on normal exit.
-- ZIP extraction includes path traversal protection (Zip Slip guard).
-
----
-
-## Files in this repo
-
-- `preprocess-labs.py` — command-line preprocessing tool
-- `README.md` — documentation
