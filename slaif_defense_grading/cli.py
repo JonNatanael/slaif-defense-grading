@@ -41,8 +41,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
             Real roster data is read locally from --students-csv. The generated workspace
             receives only pseudonyms, copied task.tex, pseudonymized submission text files,
-            and a locally rendered process.sh. The private pseudonym map and preprocessing
-            report are written under --private-output, outside the workspace.
+            associations.csv, prompt files, and a locally rendered process.sh. The private
+            pseudonym map and preprocessing report are written under --private-output,
+            outside the workspace.
             """
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,

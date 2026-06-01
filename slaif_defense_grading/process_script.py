@@ -5,11 +5,12 @@ from pathlib import Path
 from typing import Sequence
 
 
-def render_process_script(template_path: Path, output_path: Path, pseudonyms: Sequence[str]) -> None:
+def render_process_script(template_path: Path, output_path: Path, prompt_paths: Sequence[Path]) -> None:
     template = template_path.read_text(encoding="utf-8")
     phase2_commands = "\n".join(
-        f'codex --ask-for-approval never --full-auto exec --skip-git-repo-check "Phase 2 {pseudonym}"'
-        for pseudonym in pseudonyms
+        'codex --ask-for-approval never --full-auto exec --skip-git-repo-check '
+        f'"$(cat {prompt_path.as_posix()})"'
+        for prompt_path in prompt_paths
     )
 
     if "# PHASE2_COMMANDS" not in template:

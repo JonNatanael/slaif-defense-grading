@@ -69,6 +69,39 @@ class ManifestEntry:
     excluded_opaque_documents: List[str]
 
 
+@dataclass(frozen=True)
+class Association:
+    student: RosterStudent
+    txt_files: List[str]
+    document_files: List[str]
+
+    @property
+    def all_files(self) -> List[str]:
+        return [*self.txt_files, *self.document_files]
+
+    @property
+    def status(self) -> str:
+        return "matched" if self.all_files else "unresolved"
+
+    @property
+    def evidence(self) -> str:
+        if self.all_files:
+            return f"Generated pseudonymized submission package for {self.student.pseudonym}."
+        return "No matched pseudonymized submission files were generated."
+
+
+ASSOCIATION_COLUMNS = [
+    "name",
+    "surname",
+    "full_name",
+    "associated_txt_files",
+    "associated_document_files",
+    "all_associated_files",
+    "status",
+    "evidence",
+]
+
+
 def normalize_identity(value: str) -> str:
     return re.sub(r"\s+", " ", value.strip()).casefold()
 
@@ -256,6 +289,105 @@ def copy_pseudonymized_documents(student: RosterStudent, extracted_dirs: Sequenc
     return copied
 
 
+def semicolon_join(values: Sequence[str]) -> str:
+    return ";".join(values)
+
+
+def write_associations_csv(
+    students: Sequence[RosterStudent],
+    workspace: Path,
+    text_outputs_by_row: Dict[int, str],
+    document_outputs_by_row: Dict[int, List[str]],
+) -> List[Association]:
+    associations = [
+        Association(
+            student=student,
+            txt_files=[text_outputs_by_row[student.row_number]] if student.row_number in text_outputs_by_row else [],
+            document_files=document_outputs_by_row.get(student.row_number, []),
+        )
+        for student in students
+    ]
+
+    with (workspace / "associations.csv").open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=ASSOCIATION_COLUMNS, lineterminator="\n")
+        writer.writeheader()
+        for association in associations:
+            student = association.student
+            writer.writerow(
+                {
+                    "name": student.pseudonym_name,
+                    "surname": student.pseudonym_surname,
+                    "full_name": student.pseudonym,
+                    "associated_txt_files": semicolon_join(association.txt_files),
+                    "associated_document_files": semicolon_join(association.document_files),
+                    "all_associated_files": semicolon_join(association.all_files),
+                    "status": association.status,
+                    "evidence": association.evidence,
+                }
+            )
+
+    return associations
+
+
+def render_phase2_prompt(association: Association, all_associations: Sequence[Association]) -> str:
+    student = association.student
+    associated_files = association.all_files
+    associated_files_text = ", ".join(f"`{path}`" for path in associated_files) if associated_files else "none"
+    comparison_students = [
+        other.student.pseudonym
+        for other in all_associations
+        if other.student.row_number != student.row_number and other.status == "matched"
+    ]
+    comparison_text = ", ".join(comparison_students) if comparison_students else "none"
+
+    return (
+        f"# Oral-verification prompt for {student.pseudonym}\n"
+        "\n"
+        "Operate only inside the current pseudonymized workspace. Do not use external identity data, "
+        "private preprocessing outputs, or files outside this workspace.\n"
+        "\n"
+        "Use `students.csv`, `associations.csv`, and `task.tex`. The target pseudonymized student is "
+        f"`{student.pseudonym}`.\n"
+        "\n"
+        f"Use exactly the files listed for this student in `all_associated_files`: {associated_files_text}.\n"
+        f"Compare the target submission package against other students with resolved associations: {comparison_text}.\n"
+        "Use `task.tex` to discount overlap that is simply required by the assignment.\n"
+        "\n"
+        "Do not treat these as student submissions: `students.csv`, `associations.csv`, `task.tex`, "
+        "`process.sh`, `.slaif_prompts/`, preprocessing or report files if any, and already generated "
+        "student report folders. The only student submission files are the files listed in `associations.csv`.\n"
+        "\n"
+        f"Write the output to `{student.pseudonym}/report_aspects.md`.\n"
+        "\n"
+        "Generate instructor-facing oral-verification material in Slovenian. Avoid AI-authorship accusations, "
+        "plagiarism accusations, and generic theory questions detached from the submitted work.\n"
+        "\n"
+        "If this student has no associated files, still create the output folder and write clearly in Slovenian "
+        "that no submission material was found.\n"
+        "\n"
+        "When enough evidence exists, create exactly three numbered items. For each item include these labels:\n"
+        "\n"
+        "- Vidik poročila oziroma rešitve\n"
+        "- Zakaj ta vidik izstopa\n"
+        "- Vprašanje za študenta\n"
+        "- Pričakovani odgovor\n"
+    )
+
+
+def write_phase2_prompts(workspace: Path, associations: Sequence[Association]) -> List[Path]:
+    prompt_dir = workspace / ".slaif_prompts"
+    prompt_dir.mkdir(parents=True, exist_ok=True)
+    prompt_paths: List[Path] = []
+
+    for association in associations:
+        student = association.student
+        prompt_path = prompt_dir / f"phase2_{student.filename_stem}.md"
+        prompt_path.write_text(render_phase2_prompt(association, associations), encoding="utf-8", newline="\n")
+        prompt_paths.append(prompt_path.relative_to(workspace))
+
+    return prompt_paths
+
+
 def discover_submission_dirs(student_folder_path: Path, outer_extract: Path, unzipped_root: Path) -> List[Path]:
     extracted_dirs: List[Path] = []
     student_zips = sorted(iter_nested_zips(student_folder_path), key=lambda p: p.as_posix().casefold())
@@ -351,7 +483,12 @@ def write_preprocessing_report(
     report.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def leak_check_workspace(workspace: Path, students: Sequence[RosterStudent], include_opaque_documents: bool) -> None:
+def leak_check_workspace(
+    workspace: Path,
+    students: Sequence[RosterStudent],
+    include_opaque_documents: bool,
+    extra_private_identifiers: Sequence[str] = (),
+) -> None:
     identifiers: List[str] = []
     for student in students:
         identifiers.extend([student.full_name, f"{student.name} {student.surname}"])
@@ -360,6 +497,7 @@ def leak_check_workspace(workspace: Path, students: Sequence[RosterStudent], inc
             if value:
                 identifiers.append(value)
 
+    identifiers.extend(extra_private_identifiers)
     identifiers = sorted({value for value in identifiers if value.strip()}, key=len, reverse=True)
     text_suffixes = {*READABLE_SUFFIXES, ".csv", ".sh"}
 
@@ -412,13 +550,14 @@ def prepare_workspace(
     write_workspace_students_csv(students, workspace)
     write_private_pseudonym_map(students, private_output)
     shutil.copy2(task_file, workspace / "task.tex")
-    render_process_script(template_path, workspace / "process.sh", [student.pseudonym for student in students])
 
     matched_students: Dict[int, RosterStudent] = {}
     unmatched_folders: List[str] = []
     copied_documents: List[Path] = []
     excluded_documents: List[str] = []
     manifest_entries: List[ManifestEntry] = []
+    text_outputs_by_row: Dict[int, str] = {}
+    document_outputs_by_row: Dict[int, List[str]] = {}
 
     with tempfile.TemporaryDirectory(dir="/tmp", prefix="slaif-defense-grading_prepare_") as tmp:
         tmpdir = Path(tmp)
@@ -440,6 +579,7 @@ def prepare_workspace(
             extracted_dirs = discover_submission_dirs(student_folder_path, outer_extract, unzipped_root)
             matched_students[student.row_number] = student
             text_output = write_pseudonymized_text_output(student, extracted_dirs, workspace, students)
+            text_outputs_by_row[student.row_number] = text_output.name
             opaque_documents = opaque_document_relative_paths(extracted_dirs)
             copied_for_student: List[Path] = []
             excluded_for_student: List[str] = []
@@ -447,6 +587,7 @@ def prepare_workspace(
             if include_opaque_documents:
                 copied_for_student = copy_pseudonymized_documents(student, extracted_dirs, workspace)
                 copied_documents.extend(copied_for_student)
+                document_outputs_by_row[student.row_number] = [path.name for path in copied_for_student]
             else:
                 excluded_for_student = opaque_documents
                 excluded_documents.extend(f"{student_folder_path.name}/{path}" for path in opaque_documents)
@@ -456,10 +597,14 @@ def prepare_workspace(
                     original_folder=student_folder_path.name,
                     pseudonym=student.pseudonym,
                     text_output=text_output.name,
-                    copied_opaque_documents=[path.name for path in copied_for_student],
+                    copied_opaque_documents=document_outputs_by_row.get(student.row_number, []),
                     excluded_opaque_documents=excluded_for_student,
                 )
             )
+
+    associations = write_associations_csv(students, workspace, text_outputs_by_row, document_outputs_by_row)
+    prompt_paths = write_phase2_prompts(workspace, associations)
+    render_process_script(template_path, workspace / "process.sh", prompt_paths)
 
     result = PrepareResult(
         roster_count=len(students),
@@ -472,5 +617,7 @@ def prepare_workspace(
         include_opaque_documents=include_opaque_documents,
     )
     write_preprocessing_report(private_output, result)
-    leak_check_workspace(workspace, students, include_opaque_documents)
+    private_identifiers = [entry.original_folder for entry in manifest_entries]
+    private_identifiers.extend(unmatched_folders)
+    leak_check_workspace(workspace, students, include_opaque_documents, private_identifiers)
     return result

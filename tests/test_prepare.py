@@ -9,6 +9,26 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+ASSOCIATION_COLUMNS = [
+    "name",
+    "surname",
+    "full_name",
+    "associated_txt_files",
+    "associated_document_files",
+    "all_associated_files",
+    "status",
+    "evidence",
+]
+FORBIDDEN_IDENTIFIERS = [
+    "Ana Novak",
+    "Boris Kovac",
+    "ana.novak@example.invalid",
+    "boris.kovac@example.invalid",
+    "63240001",
+    "63240002",
+    "Ana Novak_12345_assignsubmission_file",
+    "Unmatched Person_999_assignsubmission_file",
+]
 
 
 def write_text(path: Path, text: str) -> None:
@@ -121,10 +141,12 @@ def test_prepare_creates_pseudonymized_workspace_and_private_outputs(tmp_path: P
     process_sh = workspace / "process.sh"
     process_text = process_sh.read_text(encoding="utf-8")
     assert process_sh.stat().st_mode & stat.S_IXUSR
-    assert '"Phase 1"' in process_text
-    assert process_text.index("Phase 2 Student 0001") < process_text.index("Phase 2 Student 0002")
+    assert "Phase 1" not in process_text
+    assert process_text.count("codex --ask-for-approval never --full-auto exec --skip-git-repo-check") == 2
+    assert process_text.index(".slaif_prompts/phase2_Student_0001.md") < process_text.index(".slaif_prompts/phase2_Student_0002.md")
     assert "Ana Novak" not in process_text
     assert "Boris Kovac" not in process_text
+    assert not list(workspace.rglob("AGENTS.md"))
 
     student_text = (workspace / "Student_0001.txt").read_text(encoding="utf-8")
     assert "==== BEGIN Student 0001 | submission | main.py ====" in student_text
@@ -138,6 +160,49 @@ def test_prepare_creates_pseudonymized_workspace_and_private_outputs(tmp_path: P
     assert not list(workspace.glob("*.odt"))
     assert not list(workspace.glob("*.rtf"))
     assert not (workspace / "Unmatched_Person.txt").exists()
+
+    with (workspace / "associations.csv").open("r", encoding="utf-8", newline="") as f:
+        association_reader = csv.DictReader(f)
+        association_rows = list(association_reader)
+    assert association_reader.fieldnames == ASSOCIATION_COLUMNS
+    assert [row["full_name"] for row in association_rows] == ["Student 0001", "Student 0002"]
+    assert association_rows[0]["name"] == "Student"
+    assert association_rows[0]["surname"] == "0001"
+    assert association_rows[0]["associated_txt_files"] == "Student_0001.txt"
+    assert association_rows[0]["associated_document_files"] == ""
+    assert association_rows[0]["all_associated_files"] == "Student_0001.txt"
+    assert association_rows[0]["status"] == "matched"
+    assert association_rows[0]["evidence"] == "Generated pseudonymized submission package for Student 0001."
+    assert association_rows[1]["associated_txt_files"] == ""
+    assert association_rows[1]["associated_document_files"] == ""
+    assert association_rows[1]["all_associated_files"] == ""
+    assert association_rows[1]["status"] == "unresolved"
+    assert association_rows[1]["evidence"] == "No matched pseudonymized submission files were generated."
+    association_text = (workspace / "associations.csv").read_text(encoding="utf-8")
+    for value in FORBIDDEN_IDENTIFIERS:
+        assert value not in association_text
+
+    prompt_paths = sorted((workspace / ".slaif_prompts").glob("*.md"))
+    assert [path.name for path in prompt_paths] == ["phase2_Student_0001.md", "phase2_Student_0002.md"]
+    prompt_text = prompt_paths[0].read_text(encoding="utf-8")
+    assert "Student 0001" in prompt_text
+    assert "Student_0001.txt" in prompt_text
+    assert "Student 0001/report_aspects.md" in prompt_text
+    assert "students.csv" in prompt_text
+    assert "associations.csv" in prompt_text
+    assert "task.tex" in prompt_text
+    assert "Vidik poročila oziroma rešitve" in prompt_text
+    assert "Zakaj ta vidik izstopa" in prompt_text
+    assert "Vprašanje za študenta" in prompt_text
+    assert "Pričakovani odgovor" in prompt_text
+    assert "AI-authorship accusations" in prompt_text
+    for value in FORBIDDEN_IDENTIFIERS:
+        assert value not in prompt_text
+
+    unresolved_prompt = prompt_paths[1].read_text(encoding="utf-8")
+    assert "Student 0002" in unresolved_prompt
+    assert "none" in unresolved_prompt
+    assert "no submission material was found" in unresolved_prompt
 
     map_path = private_output / "pseudonym_map.csv"
     assert map_path.exists()
@@ -182,24 +247,26 @@ def test_prepare_can_explicitly_include_opaque_documents_with_warning(tmp_path: 
     assert "Student_0001__document_" in report
     assert "Excluded opaque documents: none" in report
 
+    with (workspace / "associations.csv").open("r", encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+    copied_names = sorted(path.name for path in workspace.iterdir() if path.suffix in {".pdf", ".docx", ".odt", ".rtf"})
+    assert rows[0]["associated_txt_files"] == "Student_0001.txt"
+    assert rows[0]["associated_document_files"] == ";".join(copied_names)
+    assert rows[0]["all_associated_files"] == ";".join(["Student_0001.txt", *copied_names])
+    assert rows[0]["status"] == "matched"
+    for value in FORBIDDEN_IDENTIFIERS:
+        assert value not in (workspace / "associations.csv").read_text(encoding="utf-8")
+
 
 def test_workspace_generated_text_and_filenames_do_not_contain_real_identifiers(tmp_path: Path) -> None:
     workspace, _private_output, result = run_prepare(tmp_path)
 
     assert result.returncode == 0, result.stderr
-    forbidden = [
-        "Ana Novak",
-        "Boris Kovac",
-        "ana.novak@example.invalid",
-        "boris.kovac@example.invalid",
-        "63240001",
-        "63240002",
-    ]
     for path in workspace.rglob("*"):
         rel = path.relative_to(workspace).as_posix()
-        for value in forbidden:
+        for value in FORBIDDEN_IDENTIFIERS:
             assert value not in rel
         if path.is_file() and path.suffix in {".txt", ".csv", ".sh", ".tex", ".md", ".py", ".m", ".c", ".h", ".cpp", ".hpp", ".ipynb"}:
             text = path.read_text(encoding="utf-8")
-            for value in forbidden:
+            for value in FORBIDDEN_IDENTIFIERS:
                 assert value not in text
