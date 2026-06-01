@@ -19,52 +19,67 @@ from .core import (
 )
 from .io_utils import eprint, unique_path, write_partial_concatenation
 from .models import SubmissionArtifact
+from .prepare import prepare_workspace
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    description = textwrap.dedent(
-        """\
-        Local preprocessing for Moodle/Canvas-style submission exports.
+    parser = argparse.ArgumentParser(
+        prog="slaif-defense-grading.py",
+        description="Local preprocessing for SLAIF defense grading.",
+    )
+    subparsers = parser.add_subparsers(dest="command", metavar="command")
 
-        Current behavior:
+    prepare_parser = subparsers.add_parser(
+        "prepare",
+        help="create a pseudonymized agent workspace from local instructor data",
+        description=textwrap.dedent(
+            """\
+            Create a pseudonymized workspace for later AI-assisted oral defense preparation.
+
+            Real roster data is read locally from --students-csv. The generated workspace
+            receives only pseudonyms, copied task.tex, pseudonymized submission text files,
+            and a locally rendered process.sh. The private pseudonym map and preprocessing
+            report are written under --private-output, outside the workspace.
+            """
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    add_prepare_arguments(prepare_parser)
+
+    legacy_parser = subparsers.add_parser(
+        "legacy",
+        help="run the previous ZIP concatenation flow",
+        description=legacy_description(),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    add_legacy_arguments(legacy_parser)
+    return parser
+
+
+def legacy_description() -> str:
+    return textwrap.dedent(
+        """\
+        Legacy local preprocessing for Moodle/Canvas-style submission exports.
+
+        This mode preserves the previous behavior:
           1) Extracts all provided master ZIPs to temporary directories under /tmp.
              Later ZIPs replace earlier submissions for duplicate students.
-          2) Finds every nested .zip (recursively) inside the extracted contents.
+          2) Finds every nested .zip recursively inside the extracted contents.
              If a student folder has no nested ZIPs, uses subfolders as submission sources.
-          3) For each submission source (ZIP or folder):
-             - extracts ZIPs under /tmp (folders are read directly)
-             - finds readable files: .txt, .m, .py, .c, .h, .cpp, .hpp, .ipynb, MakeFile/Makefile
-             - concatenates them into a per-submission .txt with BEGIN/END delimiters
-          4) Either:
-             - Concatenates all per-submission .txt files into ONE big output file, or
-             - Writes one concatenated output file per student in an output directory.
-               In output-directory mode, PDFs are copied verbatim next to each student's
-               .txt output and renamed to match the .txt basename.
-             Every delimiter line in outputs is augmented with a student label inferred
-             from folder names plus the submission name.
+          3) Concatenates readable source files into either one big output or one output
+             per inferred student label.
 
         Privacy note:
-          - This prototype still derives labels from LMS folder names.
-          - Run it only on local instructor-controlled data.
-          - The planned pseudonymized workspace flow is not implemented in this CLI yet.
-
-        Output format (delimiter lines):
-          ==== BEGIN <student> | <submission_name> | <relative_path_inside_submission> ====
-          ... file content ...
-          ==== END   <student> | <submission_name> | <relative_path_inside_submission> ====
-
-        Notes:
-          - Extraction happens under /tmp (temporary directory).
-          - Text is decoded as UTF-8 with replacement for invalid bytes.
+          This legacy mode may derive labels from LMS folder names. Use `prepare` for the
+          pseudonymized workspace workflow.
         """
     )
 
-    parser = argparse.ArgumentParser(
-        prog="slaif-defense-grading.py",
-        description=description,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
 
+def add_legacy_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--input-file",
         "-i",
@@ -97,25 +112,85 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
 
+
+def add_prepare_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--input-file",
+        "-i",
+        nargs="+",
+        required=True,
+        help=(
+            "Path(s) to one or more Moodle/Canvas master ZIP exports. Later ZIPs override "
+            "earlier submissions for duplicate LMS student folders."
+        ),
+    )
+    parser.add_argument("--students-csv", required=True, help="Private local roster CSV with at least name,surname.")
+    parser.add_argument("--task-file", required=True, help="Task file to copy into the generated workspace as task.tex.")
+    parser.add_argument("--workspace", required=True, help="Agent-facing output workspace with pseudonymized data only.")
+    parser.add_argument(
+        "--private-output",
+        required=True,
+        help="Private output directory for pseudonym_map.csv and preprocessing_report.md. Must be outside --workspace.",
+    )
+
+
+def build_legacy_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="slaif-defense-grading.py legacy",
+        description=legacy_description(),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    add_legacy_arguments(parser)
+    return parser
+
+
+def build_prepare_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="slaif-defense-grading.py prepare",
+        description="Create a pseudonymized workspace from local instructor data.",
+    )
+    add_prepare_arguments(parser)
     return parser
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
+    if argv is not None:
+        argv = list(argv)
+        if argv and argv[0] not in {"prepare", "legacy", "-h", "--help"}:
+            return build_legacy_parser().parse_args(argv)
     return build_arg_parser().parse_args(argv)
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
-    if argv is None:
-        import sys
+def run_prepare(args: argparse.Namespace) -> int:
+    input_zips = [Path(raw).expanduser().resolve() for raw in args.input_file]
+    students_csv = Path(args.students_csv).expanduser().resolve()
+    task_file = Path(args.task_file).expanduser().resolve()
+    workspace = Path(args.workspace).expanduser().resolve()
+    private_output = Path(args.private_output).expanduser().resolve()
+    template_path = REPO_ROOT / "templates" / "process.sh.tpl"
 
-        argv = sys.argv[1:]
+    try:
+        result = prepare_workspace(
+            input_zips=input_zips,
+            students_csv=students_csv,
+            task_file=task_file,
+            workspace=workspace,
+            private_output=private_output,
+            template_path=template_path,
+        )
+    except Exception as exc:  # noqa: BLE001
+        eprint(f"ERROR: prepare failed: {exc}")
+        return 2
 
-    if len(argv) == 0:
-        build_arg_parser().print_help()
-        return 0
+    eprint(
+        "[slaif-defense-grading] Prepared pseudonymized workspace "
+        f"({result.matched_count}/{result.roster_count} students matched): {workspace}"
+    )
+    eprint(f"[slaif-defense-grading] Private outputs: {private_output}")
+    return 0
 
-    args = parse_args(argv)
 
+def run_legacy(args: argparse.Namespace) -> int:
     input_zips = [Path(raw).expanduser().resolve() for raw in args.input_file]
     output_file = Path(args.output_file).expanduser().resolve() if args.output_file else None
     output_directory = Path(args.output_directory).expanduser().resolve() if args.output_directory else None
@@ -266,3 +341,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             eprint(f"[slaif-defense-grading] Done. Wrote {output_file}")
 
     return 0
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    if argv is None:
+        import sys
+
+        argv = sys.argv[1:]
+
+    argv = list(argv)
+    if not argv:
+        build_arg_parser().print_help()
+        return 0
+
+    if argv[0] == "prepare":
+        return run_prepare(build_prepare_parser().parse_args(argv[1:]))
+
+    if argv[0] == "legacy":
+        return run_legacy(build_legacy_parser().parse_args(argv[1:]))
+
+    if argv[0] in {"-h", "--help"}:
+        build_arg_parser().print_help()
+        return 0
+
+    return run_legacy(build_legacy_parser().parse_args(argv))
