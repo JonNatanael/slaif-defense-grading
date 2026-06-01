@@ -58,9 +58,26 @@ MISSING_REPORT_COLUMNS = [
 def safe_filename(value: str) -> str:
     cleaned = re.sub(r"[\\/]+", "_", value.strip())
     cleaned = re.sub(r"\s+", "_", cleaned)
+    cleaned = re.sub(r"[^\w.-]+", "_", cleaned)
+    cleaned = re.sub(r"_+", "_", cleaned)
     cleaned = re.sub(r"[\x00-\x1f\x7f]+", "", cleaned)
     cleaned = cleaned.strip("._")
     return cleaned or "UNKNOWN"
+
+
+def unique_safe_names(students: Sequence[FinalizeStudent]) -> Dict[str, str]:
+    """Return deterministic safe path names, avoiding overwrite on duplicate names."""
+    used: Dict[str, int] = {}
+    result: Dict[str, str] = {}
+    for student in students:
+        base = student.safe_name
+        count = used.get(base, 0) + 1
+        used[base] = count
+        if count == 1:
+            result[student.pseudonym] = base
+        else:
+            result[student.pseudonym] = f"{base}__{student.pseudonym_filename_stem}"
+    return result
 
 
 def read_csv_rows(path: Path) -> tuple[List[str], List[Dict[str, str]]]:
@@ -182,6 +199,7 @@ def finalize_outputs(workspace: Path, private_output: Path, output: Path, strict
 
     map_fieldnames, students = read_pseudonym_map(pseudonym_map)
     student_output_files = read_student_outputs_index(student_outputs_index)
+    safe_names = unique_safe_names(students)
     extra_fields = [field for field in map_fieldnames if field not in set(FINAL_INDEX_BASE_COLUMNS)]
     final_index_columns = [*FINAL_INDEX_BASE_COLUMNS, *extra_fields, *FINAL_INDEX_TRAILING_COLUMNS]
 
@@ -202,7 +220,7 @@ def finalize_outputs(workspace: Path, private_output: Path, output: Path, strict
         report_file = ""
         report_status = "missing"
         if expected_report.exists():
-            report_target = instructor_reports_dir / student.safe_name / "report_aspects.md"
+            report_target = instructor_reports_dir / safe_names[student.pseudonym] / "report_aspects.md"
             write_named_report(expected_report, report_target, student)
             report_file = report_target.relative_to(output).as_posix()
             report_status = "found"
@@ -224,7 +242,7 @@ def finalize_outputs(workspace: Path, private_output: Path, output: Path, strict
         if source_output_name:
             source_output = private_student_outputs / source_output_name
             if source_output.exists():
-                output_target = final_student_outputs_dir / f"{student.safe_name}.txt"
+                output_target = final_student_outputs_dir / f"{safe_names[student.pseudonym]}.txt"
                 write_named_student_output(source_output, output_target, student)
                 student_output_file = output_target.relative_to(output).as_posix()
                 copied_student_outputs += 1

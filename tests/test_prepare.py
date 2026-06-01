@@ -289,11 +289,33 @@ def test_report_template_exists_and_readme_documents_pilot_outputs() -> None:
     template = REPO_ROOT / "templates" / "workspace" / "report_aspects_template.md"
     assert template.exists()
     template_text = template.read_text(encoding="utf-8")
-    assert "# Poročilo za ustni zagovor: <Full Name>" in template_text
-    assert "Vidik poročila oziroma rešitve" in template_text
-    assert "Zakaj ta vidik izstopa" in template_text
-    assert "Vprašanje za študenta" in template_text
-    assert "Pričakovani odgovor" in template_text
+    required_headings = [
+        "# Poročilo za ustni zagovor: <Full Name>",
+        "## Osnovni podatki",
+        "## Primer brez povezane oddaje",
+        "## 1. <kratek naslov vidika>",
+        "### Vidik poročila oziroma rešitve",
+        "### Zakaj ta vidik izstopa",
+        "### Vprašanje za študenta",
+        "### Pričakovani odgovor",
+        "## 2. <kratek naslov vidika>",
+        "## 3. <kratek naslov vidika>",
+    ]
+    for heading in required_headings:
+        assert heading in template_text
+    assert template_text.count("### Vidik poročila oziroma rešitve") == 3
+    assert template_text.count("### Zakaj ta vidik izstopa") == 3
+    assert template_text.count("### Vprašanje za študenta") == 3
+    assert template_text.count("### Pričakovani odgovor") == 3
+    assert "Zapis samo za izvajalca" in template_text
+    assert "Tega besedila se ne bere študentu kot namig" in template_text
+    assert "Ne izmišljaj vprašanj" in template_text
+
+    agents_text = (REPO_ROOT / "templates" / "workspace" / "AGENTS.md").read_text(encoding="utf-8")
+    assert "report_aspects_template.md" in agents_text
+    assert "Preserve the headings and template structure exactly" in agents_text
+    for heading in required_headings[4:8]:
+        assert heading.replace("### ", "").replace("## ", "") in agents_text
 
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     assert readme.startswith('<div style="text-align: center;">')
@@ -311,6 +333,8 @@ def test_report_template_exists_and_readme_documents_pilot_outputs() -> None:
     assert "work completed outside direct supervision" in readme
     assert "plagiarism, unauthorized collaboration, or improper AI-tool use" in readme
     assert "does not automatically prove misconduct" in readme
+    assert "What To Inspect" in readme
+    assert "What Can Be Shown To Students" in readme
 
 
 def test_quickstart_documents_complete_workflow() -> None:
@@ -339,9 +363,40 @@ def test_finalize_collects_named_outputs_and_missing_reports(tmp_path: Path) -> 
     workspace_report = report_dir / "report_aspects.md"
     original_report = (
         "# Poročilo za ustni zagovor: Student 0001\n\n"
-        "Uporabljena datoteka: Student_0001.txt\n\n"
+        "## Osnovni podatki\n\n"
+        "- Študent: Student 0001\n"
+        "- Status povezave z oddajo: matched\n"
+        "- Uporabljene datoteke: Student_0001.txt\n"
+        "- Opomba za izvajalca: Brez posebnih opomb.\n\n"
+        "## Primer brez povezane oddaje\n\n"
+        "Oddaja je povezana.\n\n"
+        "## 1. Razlaga vhodnih podatkov\n\n"
+        "### Vidik poročila oziroma rešitve\n"
+        "Student 0001 uporablja Student_0001.txt.\n\n"
+        "### Zakaj ta vidik izstopa\n"
+        "Vidik je vezan na konkretno datoteko.\n\n"
+        "### Vprašanje za študenta\n"
+        "Kako deluje rešitev?\n\n"
         "### Pričakovani odgovor\n"
-        "Student 0001 razloži rešitev.\n"
+        "Student 0001 razloži rešitev.\n\n"
+        "## 2. Omejitev\n\n"
+        "### Vidik poročila oziroma rešitve\n"
+        "Ni dodatnega vidika.\n\n"
+        "### Zakaj ta vidik izstopa\n"
+        "Omejitev je navedena.\n\n"
+        "### Vprašanje za študenta\n"
+        "Ni dodatnega vprašanja.\n\n"
+        "### Pričakovani odgovor\n"
+        "Ni dodatnega odgovora.\n\n"
+        "## 3. Omejitev\n\n"
+        "### Vidik poročila oziroma rešitve\n"
+        "Ni dodatnega vidika.\n\n"
+        "### Zakaj ta vidik izstopa\n"
+        "Omejitev je navedena.\n\n"
+        "### Vprašanje za študenta\n"
+        "Ni dodatnega vprašanja.\n\n"
+        "### Pričakovani odgovor\n"
+        "Ni dodatnega odgovora.\n"
     )
     workspace_report.write_text(original_report, encoding="utf-8", newline="\n")
 
@@ -372,6 +427,12 @@ def test_finalize_collects_named_outputs_and_missing_reports(tmp_path: Path) -> 
     named_report_text = named_report.read_text(encoding="utf-8")
     assert "Generated locally by slaif-defense-grading finalize" in named_report_text
     assert "# Poročilo za ustni zagovor: Ana Novak" in named_report_text
+    assert "## Osnovni podatki" in named_report_text
+    assert "## Primer brez povezane oddaje" in named_report_text
+    assert "### Vidik poročila oziroma rešitve" in named_report_text
+    assert "### Zakaj ta vidik izstopa" in named_report_text
+    assert "### Vprašanje za študenta" in named_report_text
+    assert "### Pričakovani odgovor" in named_report_text
     assert "Ana_Novak.txt" in named_report_text
     assert "Student 0001" not in named_report_text
     assert "Student_0001" not in named_report_text
@@ -422,6 +483,7 @@ def test_finalize_collects_named_outputs_and_missing_reports(tmp_path: Path) -> 
     assert "Found reports: 1" in finalize_report
     assert "Missing reports: 1" in finalize_report
     assert "Copied student-output text files: 1" in finalize_report
+    assert "`Student 0002` / Boris Kovac: report_aspects.md was not found in the pseudonymized workspace" in finalize_report
     assert "Instructor reports contain expected answers" in finalize_report
 
     workspace_text = (workspace / "students.csv").read_text(encoding="utf-8") + (workspace / "associations.csv").read_text(encoding="utf-8")
@@ -449,6 +511,70 @@ def test_finalize_collects_named_outputs_and_missing_reports(tmp_path: Path) -> 
     )
     assert strict_result.returncode == 2
     assert "missing 1 expected report" in strict_result.stderr
+
+
+def test_finalize_uses_deterministic_safe_paths_for_duplicate_names(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    private_output = tmp_path / "private"
+    output = tmp_path / "final"
+    workspace.mkdir()
+    private_output.mkdir()
+    (private_output / "student_outputs").mkdir()
+
+    write_text(workspace / "students.csv", "name,surname,full_name\nStudent,0001,Student 0001\nStudent,0002,Student 0002\n")
+    write_text(
+        workspace / "associations.csv",
+        "name,surname,full_name,associated_txt_files,associated_document_files,all_associated_files,status,evidence\n"
+        "Student,0001,Student 0001,Student_0001.txt,,Student_0001.txt,matched,matched\n"
+        "Student,0002,Student 0002,Student_0002.txt,,Student_0002.txt,matched,matched\n",
+    )
+    write_text(
+        private_output / "pseudonym_map.csv",
+        "pseudonym,name,surname,full_name,email,student_id\n"
+        "Student 0001,Ana,Novak,Ana Novak,ana1@example.invalid,ID-1\n"
+        "Student 0002,Ana,Novak,Ana Novak,ana2@example.invalid,ID-2\n",
+    )
+    write_text(
+        private_output / "student_outputs_index.csv",
+        "pseudonym,name,surname,full_name,student_output_file,email,student_id\n"
+        "Student 0001,Ana,Novak,Ana Novak,Student_0001.txt,ana1@example.invalid,ID-1\n"
+        "Student 0002,Ana,Novak,Ana Novak,Student_0002.txt,ana2@example.invalid,ID-2\n",
+    )
+    write_text(private_output / "student_outputs" / "Student_0001.txt", "Student 0001 content\n")
+    write_text(private_output / "student_outputs" / "Student_0002.txt", "Student 0002 content\n")
+    write_text(workspace / "Student 0001" / "report_aspects.md", "# Poročilo za ustni zagovor: Student 0001\n")
+    write_text(workspace / "Student 0002" / "report_aspects.md", "# Poročilo za ustni zagovor: Student 0002\n")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "slaif-defense-grading.py",
+            "finalize",
+            "--workspace",
+            str(workspace),
+            "--private-output",
+            str(private_output),
+            "--output",
+            str(output),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (output / "instructor_reports" / "Ana_Novak" / "report_aspects.md").exists()
+    assert (output / "instructor_reports" / "Ana_Novak__Student_0002" / "report_aspects.md").exists()
+    assert (output / "student_outputs" / "Ana_Novak.txt").exists()
+    assert (output / "student_outputs" / "Ana_Novak__Student_0002.txt").exists()
+
+    with (output / "final_index.csv").open("r", encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert rows[0]["report_file"] == "instructor_reports/Ana_Novak/report_aspects.md"
+    assert rows[1]["report_file"] == "instructor_reports/Ana_Novak__Student_0002/report_aspects.md"
+    assert rows[0]["student_output_file"] == "student_outputs/Ana_Novak.txt"
+    assert rows[1]["student_output_file"] == "student_outputs/Ana_Novak__Student_0002.txt"
 
 
 

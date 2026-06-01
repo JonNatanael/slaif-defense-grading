@@ -118,6 +118,17 @@ The instructor assignment file is copied under a canonical non-private workspace
 
 ## Running The Agent Workflow
 
+### What To Inspect Before Running The Agent
+
+Before running `process.sh`, inspect:
+
+- `workspace/lab-agent/` and confirm generated filenames are pseudonymized;
+- `workspace/lab-agent/students.csv` and `workspace/lab-agent/associations.csv`;
+- `workspace/lab-agent/report_aspects_template.md`;
+- `workspace/lab-private/preprocessing_report.md`.
+
+The agent-facing workspace should contain no real names, emails, student IDs, or original LMS folder names. The private report may contain real matching details and must remain local.
+
 After `prepare` completes, run the generated script from inside the pseudonymized workspace:
 
 ```bash
@@ -159,6 +170,14 @@ final/
 ```
 
 `finalize` maps pseudonymized reports and student-output text files back to real roster rows using the private maps. It does not modify the pseudonymized workspace. Use `--strict` if missing agent reports should make finalization fail.
+
+## What Can Be Shown To Students
+
+`final/student_outputs/<Name>.txt` is the pseudonymized concatenated submission text that the agent saw. It may be shown individually to the corresponding student when useful for review.
+
+`final/instructor_reports/<Name>/report_aspects.md` is instructor-facing. It contains expected answers and should not be sent wholesale to students.
+
+Do not share `pseudonym_map.csv`, `student_outputs_index.csv`, or `final_index.csv` wholesale with students.
 
 ## AGENTS.md Roles
 
