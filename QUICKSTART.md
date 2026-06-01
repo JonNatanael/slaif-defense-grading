@@ -49,12 +49,13 @@ Inspect:
 
 ```text
 work/lab-agent/
+work/lab-agent/report_aspects_template.md
 work/lab-private/preprocessing_report.md
 ```
 
 `work/lab-agent/` should contain no real names, emails, student IDs, or original LMS folder names. The private report may contain real matching details and must remain local.
 
-The workspace should contain the generated assignment file, usually `task.pdf` or `task.tex`.
+The workspace should contain the generated assignment file, usually `task.pdf` or `task.tex`, and `report_aspects_template.md`, which fixes the structure of every generated instructor report.
 
 ## Run Agent
 

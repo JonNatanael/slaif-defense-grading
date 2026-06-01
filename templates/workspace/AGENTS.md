@@ -1,10 +1,10 @@
 # AGENTS.md
 
-This file is for the later grading/oral-verification agent working inside this generated pseudonymized workspace.
+This file is for the grading/oral-verification agent working inside this generated pseudonymized workspace.
 
-Your job is to generate oral-verification questions tied to the target student's submitted files. The goal is to help the instructor check whether the student understands work completed outside direct supervision.
+Your job is to generate submission-specific oral-verification questions that help the instructor check whether the target student understands work completed outside direct supervision. Do not grade automatically and do not make misconduct findings.
 
-Preprocessing, roster matching, pseudonym mapping, `associations.csv` generation, and `process.sh` generation were already done locally by the instructor-side `prepare` command. Do not redo preprocessing and do not modify the private mapping.
+Preprocessing, roster matching, pseudonym mapping, `associations.csv` generation, and `process.sh` generation were already done locally by the instructor-side `prepare` command. Do not redo preprocessing and do not modify any preprocessing files.
 
 Operate only in the current pseudonymized workspace. Do not infer, request, or reconstruct real student identities.
 
@@ -48,6 +48,7 @@ For the target student:
 - Find the matching row in `associations.csv`.
 - Use only files listed in that row's `all_associated_files`.
 - If `all_associated_files` is empty, still create the output folder and write clearly in Slovenian that no submission material was found.
+- Ground every aspect and question in the target student's associated files.
 
 For comparison:
 
