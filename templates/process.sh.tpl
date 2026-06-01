@@ -1,8 +1,6 @@
 #!/bin/bash
 set -euo pipefail
 
-# Phase 1: run the initial workspace-wide processing step.
-./phase1.sh
+codex --ask-for-approval never --full-auto exec --skip-git-repo-check "Phase 1"
 
-# Phase 2: run one command per pseudonymized student entry in deterministic order.
 # PHASE2_COMMANDS
