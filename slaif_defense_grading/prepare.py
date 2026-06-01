@@ -58,6 +58,8 @@ class PrepareResult:
     excluded_documents: List[str]
     manifest_entries: List["ManifestEntry"]
     include_opaque_documents: bool
+    student_outputs_dir: Path
+    student_outputs_index: Path
 
 
 @dataclass
@@ -197,6 +199,12 @@ def write_private_pseudonym_map(students: Sequence[RosterStudent], private_outpu
             writer.writerow(row)
 
 
+def optional_roster_fields(students: Sequence[RosterStudent]) -> List[str]:
+    if not students:
+        return []
+    return [field for field in students[0].fieldnames if field not in {"name", "surname", "full_name"}]
+
+
 def iter_scrub_patterns(students: Sequence[RosterStudent]) -> Iterable[tuple[re.Pattern[str], str]]:
     for student in students:
         names = {student.full_name, f"{student.name} {student.surname}"}
@@ -329,63 +337,42 @@ def write_associations_csv(
     return associations
 
 
-def render_phase2_prompt(association: Association, all_associations: Sequence[Association]) -> str:
-    student = association.student
-    associated_files = association.all_files
-    associated_files_text = ", ".join(f"`{path}`" for path in associated_files) if associated_files else "none"
-    comparison_students = [
-        other.student.pseudonym
-        for other in all_associations
-        if other.student.row_number != student.row_number and other.status == "matched"
-    ]
-    comparison_text = ", ".join(comparison_students) if comparison_students else "none"
+def copy_private_student_outputs(
+    students: Sequence[RosterStudent],
+    workspace: Path,
+    private_output: Path,
+    text_outputs_by_row: Dict[int, str],
+) -> tuple[Path, Path]:
+    output_dir = private_output / "student_outputs"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    index_path = private_output / "student_outputs_index.csv"
 
-    return (
-        f"# Oral-verification prompt for {student.pseudonym}\n"
-        "\n"
-        "Operate only inside the current pseudonymized workspace. Do not use external identity data, "
-        "private preprocessing outputs, or files outside this workspace.\n"
-        "\n"
-        "Use `students.csv`, `associations.csv`, and `task.tex`. The target pseudonymized student is "
-        f"`{student.pseudonym}`.\n"
-        "\n"
-        f"Use exactly the files listed for this student in `all_associated_files`: {associated_files_text}.\n"
-        f"Compare the target submission package against other students with resolved associations: {comparison_text}.\n"
-        "Use `task.tex` to discount overlap that is simply required by the assignment.\n"
-        "\n"
-        "Do not treat these as student submissions: `students.csv`, `associations.csv`, `task.tex`, "
-        "`process.sh`, `.slaif_prompts/`, preprocessing or report files if any, and already generated "
-        "student report folders. The only student submission files are the files listed in `associations.csv`.\n"
-        "\n"
-        f"Write the output to `{student.pseudonym}/report_aspects.md`.\n"
-        "\n"
-        "Generate instructor-facing oral-verification material in Slovenian. Avoid AI-authorship accusations, "
-        "plagiarism accusations, and generic theory questions detached from the submitted work.\n"
-        "\n"
-        "If this student has no associated files, still create the output folder and write clearly in Slovenian "
-        "that no submission material was found.\n"
-        "\n"
-        "When enough evidence exists, create exactly three numbered items. For each item include these labels:\n"
-        "\n"
-        "- Vidik poročila oziroma rešitve\n"
-        "- Zakaj ta vidik izstopa\n"
-        "- Vprašanje za študenta\n"
-        "- Pričakovani odgovor\n"
-    )
+    extra_fields = optional_roster_fields(students)
+    fieldnames = ["pseudonym", "name", "surname", "full_name", "student_output_file", *extra_fields]
+    with index_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, lineterminator="\n")
+        writer.writeheader()
+        for student in students:
+            filename = text_outputs_by_row.get(student.row_number)
+            if not filename:
+                continue
 
+            source = workspace / filename
+            target = output_dir / filename
+            shutil.copy2(source, target)
 
-def write_phase2_prompts(workspace: Path, associations: Sequence[Association]) -> List[Path]:
-    prompt_dir = workspace / ".slaif_prompts"
-    prompt_dir.mkdir(parents=True, exist_ok=True)
-    prompt_paths: List[Path] = []
+            row = {
+                "pseudonym": student.pseudonym,
+                "name": student.name,
+                "surname": student.surname,
+                "full_name": student.full_name,
+                "student_output_file": filename,
+            }
+            for field in extra_fields:
+                row[field] = student.row.get(field, "")
+            writer.writerow(row)
 
-    for association in associations:
-        student = association.student
-        prompt_path = prompt_dir / f"phase2_{student.filename_stem}.md"
-        prompt_path.write_text(render_phase2_prompt(association, associations), encoding="utf-8", newline="\n")
-        prompt_paths.append(prompt_path.relative_to(workspace))
-
-    return prompt_paths
+    return output_dir, index_path
 
 
 def discover_submission_dirs(student_folder_path: Path, outer_extract: Path, unzipped_root: Path) -> List[Path]:
@@ -432,6 +419,10 @@ def write_preprocessing_report(
             "- Text/source scrubbing is best-effort and local. It replaces known roster full names, emails, and student IDs before writing workspace text files.",
             "- Only the generated workspace directory should be given to the later agent.",
             "- The private pseudonym map and this report must stay outside the agent workspace.",
+            f"- Student-visible concatenated outputs were written to `{result.student_outputs_dir.name}/`.",
+            f"- `{result.student_outputs_index.name}` maps those pseudonymized files back to real roster rows for instructor use.",
+            "- Student-output files are pseudonymized copies of the exact text input files generated for the agent.",
+            "- Use the private index or pseudonym map to identify which pseudonymized file belongs to which student; do not share the full private mapping wholesale with students.",
         ]
     )
 
@@ -525,6 +516,8 @@ def prepare_workspace(
     workspace: Path,
     private_output: Path,
     template_path: Path,
+    workspace_agents_template: Path,
+    report_template: Path,
     include_opaque_documents: bool = False,
 ) -> PrepareResult:
     students = read_roster(students_csv)
@@ -543,12 +536,18 @@ def prepare_workspace(
 
     if not task_file.exists():
         raise FileNotFoundError(f"task file does not exist: {task_file}")
+    if not workspace_agents_template.exists():
+        raise FileNotFoundError(f"workspace AGENTS template does not exist: {workspace_agents_template}")
+    if not report_template.exists():
+        raise FileNotFoundError(f"report template does not exist: {report_template}")
 
     workspace.mkdir(parents=True, exist_ok=True)
     private_output.mkdir(parents=True, exist_ok=True)
 
     write_workspace_students_csv(students, workspace)
     write_private_pseudonym_map(students, private_output)
+    shutil.copy2(workspace_agents_template, workspace / "AGENTS.md")
+    shutil.copy2(report_template, workspace / "report_aspects_template.md")
     shutil.copy2(task_file, workspace / "task.tex")
 
     matched_students: Dict[int, RosterStudent] = {}
@@ -603,8 +602,13 @@ def prepare_workspace(
             )
 
     associations = write_associations_csv(students, workspace, text_outputs_by_row, document_outputs_by_row)
-    prompt_paths = write_phase2_prompts(workspace, associations)
-    render_process_script(template_path, workspace / "process.sh", prompt_paths)
+    render_process_script(template_path, workspace / "process.sh", [association.student.pseudonym for association in associations])
+    student_outputs_dir, student_outputs_index = copy_private_student_outputs(
+        students,
+        workspace,
+        private_output,
+        text_outputs_by_row,
+    )
 
     result = PrepareResult(
         roster_count=len(students),
@@ -615,6 +619,8 @@ def prepare_workspace(
         excluded_documents=excluded_documents,
         manifest_entries=manifest_entries,
         include_opaque_documents=include_opaque_documents,
+        student_outputs_dir=student_outputs_dir,
+        student_outputs_index=student_outputs_index,
     )
     write_preprocessing_report(private_output, result)
     private_identifiers = [entry.original_folder for entry in manifest_entries]
