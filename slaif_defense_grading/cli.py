@@ -19,6 +19,7 @@ from .core import (
 )
 from .io_utils import eprint, unique_path, write_partial_concatenation
 from .models import SubmissionArtifact
+from .finalize import finalize_outputs
 from .prepare import prepare_workspace
 
 
@@ -49,6 +50,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     add_prepare_arguments(prepare_parser)
+
+    finalize_parser = subparsers.add_parser(
+        "finalize",
+        help="collect pseudonymized agent outputs into private named instructor outputs",
+        description=textwrap.dedent(
+            """\
+            Create private named final outputs after the agent has run in the pseudonymized
+            workspace. This command reads the workspace and private prepare outputs, maps
+            pseudonyms back to real local roster rows, and writes instructor-facing files
+            under --output. It does not modify the pseudonymized workspace.
+            """
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    add_finalize_arguments(finalize_parser)
 
     legacy_parser = subparsers.add_parser(
         "legacy",
@@ -143,6 +159,13 @@ def add_prepare_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def add_finalize_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--workspace", required=True, help="Prepared pseudonymized workspace after the agent has run.")
+    parser.add_argument("--private-output", required=True, help="Private output directory created by prepare.")
+    parser.add_argument("--output", required=True, help="Private final output directory for named instructor outputs.")
+    parser.add_argument("--strict", action="store_true", help="Fail if any expected report_aspects.md is missing.")
+
+
 def build_legacy_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="slaif-defense-grading.py legacy",
@@ -162,10 +185,19 @@ def build_prepare_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def build_finalize_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="slaif-defense-grading.py finalize",
+        description="Create private named final outputs from a completed pseudonymized workspace.",
+    )
+    add_finalize_arguments(parser)
+    return parser
+
+
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     if argv is not None:
         argv = list(argv)
-        if argv and argv[0] not in {"prepare", "legacy", "-h", "--help"}:
+        if argv and argv[0] not in {"prepare", "finalize", "legacy", "-h", "--help"}:
             return build_legacy_parser().parse_args(argv)
     return build_arg_parser().parse_args(argv)
 
@@ -201,6 +233,30 @@ def run_prepare(args: argparse.Namespace) -> int:
         f"({result.matched_count}/{result.roster_count} students matched): {workspace}"
     )
     eprint(f"[slaif-defense-grading] Private outputs: {private_output}")
+    return 0
+
+
+def run_finalize(args: argparse.Namespace) -> int:
+    workspace = Path(args.workspace).expanduser().resolve()
+    private_output = Path(args.private_output).expanduser().resolve()
+    output = Path(args.output).expanduser().resolve()
+
+    try:
+        result = finalize_outputs(
+            workspace=workspace,
+            private_output=private_output,
+            output=output,
+            strict=args.strict,
+        )
+    except Exception as exc:  # noqa: BLE001
+        eprint(f"ERROR: finalize failed: {exc}")
+        return 2
+
+    eprint(
+        "[slaif-defense-grading] Finalized private outputs "
+        f"({result.found_reports}/{result.roster_count} reports found, "
+        f"{result.copied_student_outputs} student outputs copied): {output}"
+    )
     return 0
 
 
@@ -370,6 +426,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     if argv[0] == "prepare":
         return run_prepare(build_prepare_parser().parse_args(argv[1:]))
+
+    if argv[0] == "finalize":
+        return run_finalize(build_finalize_parser().parse_args(argv[1:]))
 
     if argv[0] == "legacy":
         return run_legacy(build_legacy_parser().parse_args(argv[1:]))

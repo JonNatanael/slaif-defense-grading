@@ -12,6 +12,8 @@ SLAIF stands for Slovenian AI Factory.
 
 This project is not an automatic grading system, not an AI detector, not a plagiarism accusation tool, and not a fully automatic decision-maker.
 
+For a complete step-by-step run, see [QUICKSTART.md](QUICKSTART.md).
+
 ## Current Workflow
 
 Preprocessing is run locally by the instructor:
@@ -114,6 +116,33 @@ codex --ask-for-approval never --full-auto exec --skip-git-repo-check "Run oral-
 ```
 
 There is no agent-run Phase 1. Association generation is local preprocessing and is already complete before `process.sh` runs.
+
+## Finalize Named Local Outputs
+
+After the agent writes reports such as `Student 0001/report_aspects.md`, run:
+
+```bash
+python3 slaif-defense-grading.py finalize \
+  --workspace workspace/lab-agent \
+  --private-output workspace/lab-private \
+  --output workspace/final
+```
+
+Final output is private/local and may contain real student identities:
+
+```text
+final/
+  final_index.csv
+  finalize_report.md
+  missing_reports.csv
+  instructor_reports/
+    Mila_Kranjc/
+      report_aspects.md
+  student_outputs/
+    Mila_Kranjc.txt
+```
+
+`finalize` maps pseudonymized reports and student-output text files back to real roster rows using the private maps. It does not modify the pseudonymized workspace. Use `--strict` if missing agent reports should make finalization fail.
 
 ## AGENTS.md Roles
 
@@ -223,6 +252,7 @@ Legacy mode may derive labels from LMS folder names. Use `prepare` for the pseud
 ```text
 README.md
 AGENTS.md
+QUICKSTART.md
 requirements.txt
 slaif-defense-grading.py
 
@@ -230,6 +260,7 @@ slaif_defense_grading/
   __init__.py
   cli.py
   core.py
+  finalize.py
   io_utils.py
   models.py
   prepare.py

@@ -256,6 +256,22 @@ def test_prepare_help_works() -> None:
     assert "--include-opaque-documents" in result.stdout
 
 
+def test_finalize_help_works() -> None:
+    result = subprocess.run(
+        [sys.executable, "slaif-defense-grading.py", "finalize", "--help"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "--workspace" in result.stdout
+    assert "--private-output" in result.stdout
+    assert "--output" in result.stdout
+    assert "--strict" in result.stdout
+
+
 def test_report_template_exists_and_readme_documents_pilot_outputs() -> None:
     template = REPO_ROOT / "templates" / "workspace" / "report_aspects_template.md"
     assert template.exists()
@@ -268,10 +284,147 @@ def test_report_template_exists_and_readme_documents_pilot_outputs() -> None:
 
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     assert readme.startswith('<div style="text-align: center;">')
+    assert "[QUICKSTART.md](QUICKSTART.md)" in readme
+    assert "python3 slaif-defense-grading.py finalize" in readme
     assert "report_aspects_template.md" in readme
     assert "student_outputs/" in readme
     assert "student_outputs_index.csv" in readme
     assert "--include-opaque-documents" in readme
+
+
+def test_quickstart_documents_complete_workflow() -> None:
+    quickstart = REPO_ROOT / "QUICKSTART.md"
+    assert quickstart.exists()
+    text = quickstart.read_text(encoding="utf-8")
+    assert "python3 slaif-defense-grading.py prepare" in text
+    assert "./process.sh" in text
+    assert "python3 slaif-defense-grading.py finalize" in text
+    assert "student_outputs/<Name>.txt" in text
+    assert "instructor_reports/<Name>/report_aspects.md" in text
+    assert "Do not send it wholesale to students" in text
+    assert "--include-opaque-documents" in text
+
+
+def test_finalize_collects_named_outputs_and_missing_reports(tmp_path: Path) -> None:
+    workspace, private_output, prepare_result = run_prepare(tmp_path)
+    assert prepare_result.returncode == 0, prepare_result.stderr
+
+    report_dir = workspace / "Student 0001"
+    report_dir.mkdir()
+    workspace_report = report_dir / "report_aspects.md"
+    original_report = (
+        "# Poročilo za ustni zagovor: Student 0001\n\n"
+        "Uporabljena datoteka: Student_0001.txt\n\n"
+        "### Pričakovani odgovor\n"
+        "Student 0001 razloži rešitev.\n"
+    )
+    workspace_report.write_text(original_report, encoding="utf-8", newline="\n")
+
+    output = tmp_path / "final"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "slaif-defense-grading.py",
+            "finalize",
+            "--workspace",
+            str(workspace),
+            "--private-output",
+            str(private_output),
+            "--output",
+            str(output),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert workspace_report.read_text(encoding="utf-8") == original_report
+
+    named_report = output / "instructor_reports" / "Ana_Novak" / "report_aspects.md"
+    assert named_report.exists()
+    named_report_text = named_report.read_text(encoding="utf-8")
+    assert "Generated locally by slaif-defense-grading finalize" in named_report_text
+    assert "# Poročilo za ustni zagovor: Ana Novak" in named_report_text
+    assert "Ana_Novak.txt" in named_report_text
+    assert "Student 0001" not in named_report_text
+    assert "Student_0001" not in named_report_text
+
+    named_student_output = output / "student_outputs" / "Ana_Novak.txt"
+    assert named_student_output.exists()
+    named_student_output_text = named_student_output.read_text(encoding="utf-8")
+    assert "This is the pseudonymized concatenated submission text that the agent saw." in named_student_output_text
+    assert "Student: Ana Novak" in named_student_output_text
+    assert "Pseudonym: Student 0001" in named_student_output_text
+    assert "Ana Novak" not in "\n".join(named_student_output_text.splitlines()[4:])
+    assert "ana.novak@example.invalid" not in named_student_output_text
+    assert "63240001" not in named_student_output_text
+    assert (private_output / "student_outputs" / "Student_0001.txt").read_text(encoding="utf-8") == (
+        workspace / "Student_0001.txt"
+    ).read_text(encoding="utf-8")
+
+    with (output / "final_index.csv").open("r", encoding="utf-8", newline="") as f:
+        final_rows = list(csv.DictReader(f))
+    assert [row["pseudonym"] for row in final_rows] == ["Student 0001", "Student 0002"]
+    assert final_rows[0]["name"] == "Ana"
+    assert final_rows[0]["surname"] == "Novak"
+    assert final_rows[0]["full_name"] == "Ana Novak"
+    assert final_rows[0]["email"] == "ana.novak@example.invalid"
+    assert final_rows[0]["student_id"] == "63240001"
+    assert final_rows[0]["report_status"] == "found"
+    assert final_rows[0]["report_file"] == "instructor_reports/Ana_Novak/report_aspects.md"
+    assert final_rows[0]["student_output_file"] == "student_outputs/Ana_Novak.txt"
+    assert final_rows[1]["report_status"] == "missing"
+    assert final_rows[1]["report_file"] == ""
+    assert final_rows[1]["student_output_file"] == ""
+
+    with (output / "missing_reports.csv").open("r", encoding="utf-8", newline="") as f:
+        missing_rows = list(csv.DictReader(f))
+    assert missing_rows == [
+        {
+            "pseudonym": "Student 0002",
+            "name": "Boris",
+            "surname": "Kovac",
+            "full_name": "Boris Kovac",
+            "expected_report_path": "Student 0002/report_aspects.md",
+            "reason": "report_aspects.md was not found in the pseudonymized workspace",
+        }
+    ]
+
+    finalize_report = (output / "finalize_report.md").read_text(encoding="utf-8")
+    assert "Roster students: 2" in finalize_report
+    assert "Found reports: 1" in finalize_report
+    assert "Missing reports: 1" in finalize_report
+    assert "Copied student-output text files: 1" in finalize_report
+    assert "Instructor reports contain expected answers" in finalize_report
+
+    workspace_text = (workspace / "students.csv").read_text(encoding="utf-8") + (workspace / "associations.csv").read_text(encoding="utf-8")
+    assert "Ana Novak" not in workspace_text
+    assert "Boris Kovac" not in workspace_text
+
+    strict_output = tmp_path / "final-strict"
+    strict_result = subprocess.run(
+        [
+            sys.executable,
+            "slaif-defense-grading.py",
+            "finalize",
+            "--workspace",
+            str(workspace),
+            "--private-output",
+            str(private_output),
+            "--output",
+            str(strict_output),
+            "--strict",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert strict_result.returncode == 2
+    assert "missing 1 expected report" in strict_result.stderr
+
 
 
 def test_prepare_creates_pseudonymized_workspace_and_private_outputs(tmp_path: Path) -> None:
