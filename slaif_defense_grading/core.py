@@ -35,7 +35,7 @@ def merge_master_inputs(input_zips: Sequence[Path], merged_root: Path) -> None:
         source_root = merged_root.parent / f"outer_extracted_{idx}"
         source_root.mkdir(parents=True, exist_ok=True)
 
-        eprint(f"[preprocesslabs] Extracting master ZIP #{idx} -> {source_root}")
+        eprint(f"[slaif-defense-grading] Extracting master ZIP #{idx} -> {source_root}")
         safe_extract_zip(input_zip, source_root)
 
         for student_path in sorted((p for p in source_root.iterdir() if p.is_dir()), key=lambda p: p.as_posix().casefold()):
@@ -235,7 +235,7 @@ def group_similar_artifacts(artifacts: Sequence[SubmissionArtifact]) -> List[Sub
     for group in grouped.values():
         if len(group) > 1:
             students = ", ".join(sorted({art.student_label for art in group}, key=str.casefold))
-            eprint(f"[preprocesslabs] Similarity match: grouping submissions for {students}")
+            eprint(f"[slaif-defense-grading] Similarity match: grouping submissions for {students}")
         merged_artifacts.append(merge_artifact_group(group))
 
     return merged_artifacts

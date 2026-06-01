@@ -24,10 +24,9 @@ from .models import SubmissionArtifact
 def build_arg_parser() -> argparse.ArgumentParser:
     description = textwrap.dedent(
         """\
-        Preprocess one or more master ZIPs that contain per-student folders with
-        submission ZIPs or submission subfolders.
+        Local preprocessing for Moodle/Canvas-style submission exports.
 
-        What it does (high level):
+        Current behavior:
           1) Extracts all provided master ZIPs to temporary directories under /tmp.
              Later ZIPs replace earlier submissions for duplicate students.
           2) Finds every nested .zip (recursively) inside the extracted contents.
@@ -41,9 +40,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
              - Writes one concatenated output file per student in an output directory.
                In output-directory mode, PDFs are copied verbatim next to each student's
                .txt output and renamed to match the .txt basename.
-             Every delimiter line in outputs is augmented with the student's name (inferred
-             from folder names like "Name Surname_12345_assignsubmission_file") and the
-             submission name.
+             Every delimiter line in outputs is augmented with a student label inferred
+             from folder names plus the submission name.
+
+        Privacy note:
+          - This prototype still derives labels from LMS folder names.
+          - Run it only on local instructor-controlled data.
+          - The planned pseudonymized workspace flow is not implemented in this CLI yet.
 
         Output format (delimiter lines):
           ==== BEGIN <student> | <submission_name> | <relative_path_inside_submission> ====
@@ -57,7 +60,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
 
     parser = argparse.ArgumentParser(
-        prog="preprocesslabs.py",
+        prog="slaif-defense-grading.py",
         description=description,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -128,7 +131,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     artifacts: List[SubmissionArtifact] = []
 
-    with tempfile.TemporaryDirectory(dir="/tmp", prefix="preprocesslabs_") as tmp:
+    with tempfile.TemporaryDirectory(dir="/tmp", prefix="slaif-defense-grading_") as tmp:
         tmpdir = Path(tmp)
         outer_extract = tmpdir / "outer_extracted"
         outer_extract.mkdir(parents=True, exist_ok=True)
@@ -161,15 +164,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     zip_base = zpath.stem
                     rel = zpath.relative_to(outer_extract)
 
-                    eprint(f"[preprocesslabs]  - {student_label} :: extracting {rel.as_posix()} (+ outside-ZIP files)")
+                    eprint(f"[slaif-defense-grading]  - {student_label} :: extracting {rel.as_posix()} (+ outside-ZIP files)")
 
                     try:
                         extracted_dir = stage_zip_with_sibling_files(zpath, outer_extract, unzipped_root)
                     except zipfile.BadZipFile:
-                        eprint(f"[preprocesslabs]    WARNING: Bad zip file, skipping: {zpath}")
+                        eprint(f"[slaif-defense-grading]    WARNING: Bad zip file, skipping: {zpath}")
                         continue
                     except Exception as exc:  # noqa: BLE001
-                        eprint(f"[preprocesslabs]    WARNING: Failed to extract {zpath}: {exc}")
+                        eprint(f"[slaif-defense-grading]    WARNING: Failed to extract {zpath}: {exc}")
                         continue
 
                     partial_path = unique_path(extracted_dir.parent / f"{zip_base}.txt")
@@ -177,10 +180,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     try:
                         num = write_partial_concatenation(extracted_dir, partial_path)
                     except Exception as exc:  # noqa: BLE001
-                        eprint(f"[preprocesslabs]    WARNING: Failed to concatenate files for {zpath}: {exc}")
+                        eprint(f"[slaif-defense-grading]    WARNING: Failed to concatenate files for {zpath}: {exc}")
                         continue
 
-                    eprint(f"[preprocesslabs]    -> concatenated {num} file(s) into {partial_path.name}")
+                    eprint(f"[slaif-defense-grading]    -> concatenated {num} file(s) into {partial_path.name}")
 
                     artifacts.append(
                         SubmissionArtifact(
@@ -208,15 +211,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 extracted_dir = submission_dir
                 partial_path = unique_path(unzipped_root / rel.parent / f"{submission_name}.txt")
 
-                eprint(f"[preprocesslabs]  - {student_label} :: reading folder {rel.as_posix()}")
+                eprint(f"[slaif-defense-grading]  - {student_label} :: reading folder {rel.as_posix()}")
 
                 try:
                     num = write_partial_concatenation(extracted_dir, partial_path)
                 except Exception as exc:  # noqa: BLE001
-                    eprint(f"[preprocesslabs]    WARNING: Failed to concatenate files for {submission_dir}: {exc}")
+                    eprint(f"[slaif-defense-grading]    WARNING: Failed to concatenate files for {submission_dir}: {exc}")
                     continue
 
-                eprint(f"[preprocesslabs]    -> concatenated {num} file(s) into {partial_path.name}")
+                eprint(f"[slaif-defense-grading]    -> concatenated {num} file(s) into {partial_path.name}")
 
                 artifacts.append(
                     SubmissionArtifact(
@@ -231,7 +234,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 )
 
         if total_zips or total_dirs:
-            eprint(f"[preprocesslabs] Found {total_zips} nested ZIP(s) and {total_dirs} submission folder(s).")
+            eprint(f"[slaif-defense-grading] Found {total_zips} nested ZIP(s) and {total_dirs} submission folder(s).")
 
         if not artifacts:
             eprint("ERROR: No valid submission ZIPs or folders were processed.")
@@ -241,25 +244,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             if output_directory.exists() and not output_directory.is_dir():
                 eprint(f"ERROR: output directory is not a directory: {output_directory}")
                 return 6
-            eprint(f"[preprocesslabs] Building per-student outputs -> {output_directory}")
+            eprint(f"[slaif-defense-grading] Building per-student outputs -> {output_directory}")
             try:
                 written = build_per_student_outputs(artifacts, output_directory)
             except Exception as exc:  # noqa: BLE001
                 eprint(f"ERROR: Failed to write output directory: {exc}")
                 return 6
-            eprint(f"[preprocesslabs] Done. Wrote {len(written)} file(s) to {output_directory}")
+            eprint(f"[slaif-defense-grading] Done. Wrote {len(written)} file(s) to {output_directory}")
         else:
             assert output_file is not None
             if args.similarity_check:
-                eprint("[preprocesslabs] Running similarity check across submissions")
+                eprint("[slaif-defense-grading] Running similarity check across submissions")
                 artifacts = group_similar_artifacts(artifacts)
-            eprint(f"[preprocesslabs] Building final output -> {output_file}")
+            eprint(f"[slaif-defense-grading] Building final output -> {output_file}")
             try:
                 build_big_output(artifacts, output_file)
             except Exception as exc:  # noqa: BLE001
                 eprint(f"ERROR: Failed to write output file: {exc}")
                 return 6
 
-            eprint(f"[preprocesslabs] Done. Wrote {output_file}")
+            eprint(f"[slaif-defense-grading] Done. Wrote {output_file}")
 
     return 0
