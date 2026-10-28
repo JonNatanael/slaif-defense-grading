@@ -7,7 +7,9 @@ import subprocess
 import sys
 import zipfile
 from pathlib import Path
+from typing import Sequence
 
+from slaif_defense_grading.cli import DEFAULT_CODEX_PROFILE
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ASSOCIATION_COLUMNS = [
@@ -206,6 +208,7 @@ def run_prepare(
     tmp_path: Path,
     include_opaque_documents: bool = False,
     task_suffix: str = ".tex",
+    extra_args: Sequence[str] = (),
 ) -> tuple[Path, Path, subprocess.CompletedProcess[str]]:
     students_csv = tmp_path / "students.csv"
     task_file = tmp_path / f"assignment{task_suffix}"
@@ -242,6 +245,7 @@ def run_prepare(
     ]
     if include_opaque_documents:
         command.append("--include-opaque-documents")
+    command.extend(extra_args)
 
     result = subprocess.run(
         command,
@@ -266,6 +270,10 @@ def test_prepare_help_works() -> None:
     assert "--students-csv" in result.stdout
     assert "--private-output" in result.stdout
     assert "--include-opaque-documents" in result.stdout
+    assert "--codex-profile" in result.stdout
+    assert "qwen-neumann" in result.stdout
+    assert "--codex-reasoning-effort" in result.stdout
+    assert "low/medium/xhigh" in result.stdout
     assert "task.*" in result.stdout
 
 
@@ -286,42 +294,39 @@ def test_finalize_help_works() -> None:
 
 
 def test_report_template_exists_and_readme_documents_pilot_outputs() -> None:
-    template = REPO_ROOT / "templates" / "workspace" / "report_aspects_template.md"
+    template = REPO_ROOT / "templates" / "workspace" / "report_template.json"
     assert template.exists()
-    template_text = template.read_text(encoding="utf-8")
-    required_headings = [
-        "# Poročilo za ustni zagovor: <Full Name>",
-        "## Osnovni podatki",
-        "## Primer brez povezane oddaje",
-        "## 1. <kratek naslov vidika>",
-        "### Vidik poročila oziroma rešitve",
-        "### Zakaj ta vidik izstopa",
-        "### Vprašanje za študenta",
-        "### Pričakovani odgovor",
-        "## 2. <kratek naslov vidika>",
-        "## 3. <kratek naslov vidika>",
+    schema = json.loads(template.read_text(encoding="utf-8"))
+    required_keys = [
+        "pseudonym",
+        "assignment_submitted",
+        "all_tasks_implemented",
+        "task_details",
+        "looks_llm_generated",
+        "llm_generation_indicators",
+        "code_copy_indications",
+        "notes",
     ]
-    for heading in required_headings:
-        assert heading in template_text
-    assert template_text.count("### Vidik poročila oziroma rešitve") == 3
-    assert template_text.count("### Zakaj ta vidik izstopa") == 3
-    assert template_text.count("### Vprašanje za študenta") == 3
-    assert template_text.count("### Pričakovani odgovor") == 3
-    assert "Zapis samo za izvajalca" in template_text
-    assert "Tega besedila se ne bere študentu kot namig" in template_text
-    assert "Ne izmišljaj vprašanj" in template_text
+    for key in required_keys:
+        assert key in schema
+    for key in ("other_student_pseudonym", "this_file", "this_lines", "other_file", "other_lines", "evidence"):
+        assert key in schema["code_copy_indications"][0]
+    assert "task" in schema["task_details"][0] and "implemented" in schema["task_details"][0]
 
     agents_text = (REPO_ROOT / "templates" / "workspace" / "AGENTS.md").read_text(encoding="utf-8")
-    assert "report_aspects_template.md" in agents_text
-    assert "Preserve the headings and template structure exactly" in agents_text
-    for heading in required_headings[4:8]:
-        assert heading.replace("### ", "").replace("## ", "") in agents_text
+    assert "report_template.json" in agents_text
+    assert "report.json" in agents_text
+    assert "Run submission assessment for Student 0001" in agents_text
+    for key in ("assignment_submitted", "all_tasks_implemented", "looks_llm_generated", "code_copy_indications", "other_student_pseudonym"):
+        assert key in agents_text
+    assert "Do not accuse AI use" in agents_text
 
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     assert readme.startswith('<div style="text-align: center;">')
     assert "[QUICKSTART.md](QUICKSTART.md)" in readme
     assert "python3 slaif-defense-grading.py finalize" in readme
-    assert "report_aspects_template.md" in readme
+    assert "report_template.json" in readme
+    assert "report.pdf" in readme
     assert "student_outputs/" in readme
     assert "student_outputs_index.csv" in readme
     assert "--include-opaque-documents" in readme
@@ -345,8 +350,9 @@ def test_quickstart_documents_complete_workflow() -> None:
     assert "./process.sh" in text
     assert "python3 slaif-defense-grading.py finalize" in text
     assert "student_outputs/<Name>.txt" in text
-    assert "instructor_reports/<Name>/report_aspects.md" in text
-    assert "Do not send it wholesale to students" in text
+    assert "instructor_reports/<Name>/report.pdf" in text
+    assert "report.json" in text
+    assert "Do not send them wholesale to students" in text
     assert "--include-opaque-documents" in text
     assert "--task-file assignment.pdf" in text
     assert "task.pdf" in text
@@ -360,44 +366,30 @@ def test_finalize_collects_named_outputs_and_missing_reports(tmp_path: Path) -> 
 
     report_dir = workspace / "Student 0001"
     report_dir.mkdir()
-    workspace_report = report_dir / "report_aspects.md"
-    original_report = (
-        "# Poročilo za ustni zagovor: Student 0001\n\n"
-        "## Osnovni podatki\n\n"
-        "- Študent: Student 0001\n"
-        "- Status povezave z oddajo: matched\n"
-        "- Uporabljene datoteke: Student_0001.txt\n"
-        "- Opomba za izvajalca: Brez posebnih opomb.\n\n"
-        "## Primer brez povezane oddaje\n\n"
-        "Oddaja je povezana.\n\n"
-        "## 1. Razlaga vhodnih podatkov\n\n"
-        "### Vidik poročila oziroma rešitve\n"
-        "Student 0001 uporablja Student_0001.txt.\n\n"
-        "### Zakaj ta vidik izstopa\n"
-        "Vidik je vezan na konkretno datoteko.\n\n"
-        "### Vprašanje za študenta\n"
-        "Kako deluje rešitev?\n\n"
-        "### Pričakovani odgovor\n"
-        "Student 0001 razloži rešitev.\n\n"
-        "## 2. Omejitev\n\n"
-        "### Vidik poročila oziroma rešitve\n"
-        "Ni dodatnega vidika.\n\n"
-        "### Zakaj ta vidik izstopa\n"
-        "Omejitev je navedena.\n\n"
-        "### Vprašanje za študenta\n"
-        "Ni dodatnega vprašanja.\n\n"
-        "### Pričakovani odgovor\n"
-        "Ni dodatnega odgovora.\n\n"
-        "## 3. Omejitev\n\n"
-        "### Vidik poročila oziroma rešitve\n"
-        "Ni dodatnega vidika.\n\n"
-        "### Zakaj ta vidik izstopa\n"
-        "Omejitev je navedena.\n\n"
-        "### Vprašanje za študenta\n"
-        "Ni dodatnega vprašanja.\n\n"
-        "### Pričakovani odgovor\n"
-        "Ni dodatnega odgovora.\n"
-    )
+    workspace_report = report_dir / "report.json"
+    report = {
+        "pseudonym": "Student 0001",
+        "assignment_submitted": True,
+        "all_tasks_implemented": False,
+        "task_details": [
+            {"task": "compute edit distance", "implemented": True, "evidence": "main.py lines 1-9"},
+            {"task": "report the results", "implemented": False, "evidence": "not present"},
+        ],
+        "looks_llm_generated": "likely",
+        "llm_generation_indicators": ["uniform comment style in main.py lines 1-9"],
+        "code_copy_indications": [
+            {
+                "other_student_pseudonym": "Student 0002",
+                "this_file": "main.py",
+                "this_lines": "12-34",
+                "other_file": "sol.py",
+                "other_lines": "3-11",
+                "evidence": "identical helper structure",
+            }
+        ],
+        "notes": "Brez posebnih opomb.",
+    }
+    original_report = json.dumps(report, indent=2) + "\n"
     workspace_report.write_text(original_report, encoding="utf-8", newline="\n")
 
     output = tmp_path / "final"
@@ -422,20 +414,17 @@ def test_finalize_collects_named_outputs_and_missing_reports(tmp_path: Path) -> 
     assert result.returncode == 0, result.stderr
     assert workspace_report.read_text(encoding="utf-8") == original_report
 
-    named_report = output / "instructor_reports" / "Ana_Novak" / "report_aspects.md"
-    assert named_report.exists()
-    named_report_text = named_report.read_text(encoding="utf-8")
-    assert "Generated locally by slaif-defense-grading finalize" in named_report_text
-    assert "# Poročilo za ustni zagovor: Ana Novak" in named_report_text
-    assert "## Osnovni podatki" in named_report_text
-    assert "## Primer brez povezane oddaje" in named_report_text
-    assert "### Vidik poročila oziroma rešitve" in named_report_text
-    assert "### Zakaj ta vidik izstopa" in named_report_text
-    assert "### Vprašanje za študenta" in named_report_text
-    assert "### Pričakovani odgovor" in named_report_text
-    assert "Ana_Novak.txt" in named_report_text
-    assert "Student 0001" not in named_report_text
-    assert "Student_0001" not in named_report_text
+    named_report_json = output / "instructor_reports" / "Ana_Novak" / "report.json"
+    assert named_report_json.exists()
+    assert json.loads(named_report_json.read_text(encoding="utf-8")) == report
+
+    named_report_pdf = output / "instructor_reports" / "Ana_Novak" / "report.pdf"
+    assert named_report_pdf.exists()
+    pdf_bytes = named_report_pdf.read_bytes()
+    assert pdf_bytes.startswith(b"%PDF-")
+    assert b"%%EOF" in pdf_bytes[-32:]
+    assert len(pdf_bytes) > 1000
+    assert b"/Type /Page" in pdf_bytes
 
     named_student_output = output / "student_outputs" / "Ana_Novak.txt"
     assert named_student_output.exists()
@@ -459,10 +448,12 @@ def test_finalize_collects_named_outputs_and_missing_reports(tmp_path: Path) -> 
     assert final_rows[0]["email"] == "ana.novak@example.invalid"
     assert final_rows[0]["student_id"] == "63240001"
     assert final_rows[0]["report_status"] == "found"
-    assert final_rows[0]["report_file"] == "instructor_reports/Ana_Novak/report_aspects.md"
+    assert final_rows[0]["report_pdf_file"] == "instructor_reports/Ana_Novak/report.pdf"
+    assert final_rows[0]["report_json_file"] == "instructor_reports/Ana_Novak/report.json"
     assert final_rows[0]["student_output_file"] == "student_outputs/Ana_Novak.txt"
     assert final_rows[1]["report_status"] == "missing"
-    assert final_rows[1]["report_file"] == ""
+    assert final_rows[1]["report_pdf_file"] == ""
+    assert final_rows[1]["report_json_file"] == ""
     assert final_rows[1]["student_output_file"] == ""
 
     with (output / "missing_reports.csv").open("r", encoding="utf-8", newline="") as f:
@@ -473,8 +464,8 @@ def test_finalize_collects_named_outputs_and_missing_reports(tmp_path: Path) -> 
             "name": "Boris",
             "surname": "Kovac",
             "full_name": "Boris Kovac",
-            "expected_report_path": "Student 0002/report_aspects.md",
-            "reason": "report_aspects.md was not found in the pseudonymized workspace",
+            "expected_report_path": "Student 0002/report.json",
+            "reason": "report.json was not found in the pseudonymized workspace",
         }
     ]
 
@@ -483,8 +474,35 @@ def test_finalize_collects_named_outputs_and_missing_reports(tmp_path: Path) -> 
     assert "Found reports: 1" in finalize_report
     assert "Missing reports: 1" in finalize_report
     assert "Copied student-output text files: 1" in finalize_report
-    assert "`Student 0002` / Boris Kovac: report_aspects.md was not found in the pseudonymized workspace" in finalize_report
-    assert "Instructor reports contain expected answers" in finalize_report
+    assert "- Final report (single-table overview): `final_report.pdf` and `final_report.csv`" in finalize_report
+    assert "`Student 0002` / Boris Kovac: report.json was not found in the pseudonymized workspace" in finalize_report
+    assert "Instructor reports are assessments for human review" in finalize_report
+    assert "## PDF Rendering Warnings" in finalize_report
+
+    final_report_pdf = output / "final_report.pdf"
+    assert final_report_pdf.exists()
+    final_pdf_bytes = final_report_pdf.read_bytes()
+    assert final_pdf_bytes.startswith(b"%PDF-")
+    assert b"%%EOF" in final_pdf_bytes[-32:]
+    assert b"/Type /Page" in final_pdf_bytes
+
+    with (output / "final_report.csv").open("r", encoding="utf-8", newline="") as f:
+        final_report_rows = list(csv.DictReader(f))
+    assert [row["full_name"] for row in final_report_rows] == ["Ana Novak", "Boris Kovac"]
+    assert final_report_rows[0] == {
+        "full_name": "Ana Novak",
+        "all_tasks_implemented": "No",
+        "copying_indications": "Yes (with Boris Kovac)",
+        "llm_indications": "Likely",
+        "notes": "Brez posebnih opomb.",
+    }
+    assert final_report_rows[1] == {
+        "full_name": "Boris Kovac",
+        "all_tasks_implemented": "Unknown",
+        "copying_indications": "Unknown",
+        "llm_indications": "Unknown",
+        "notes": "No report",
+    }
 
     workspace_text = (workspace / "students.csv").read_text(encoding="utf-8") + (workspace / "associations.csv").read_text(encoding="utf-8")
     assert "Ana Novak" not in workspace_text
@@ -511,6 +529,116 @@ def test_finalize_collects_named_outputs_and_missing_reports(tmp_path: Path) -> 
     )
     assert strict_result.returncode == 2
     assert "missing 1 expected report" in strict_result.stderr
+
+
+def test_finalize_invalid_report_json_listed_as_missing(tmp_path: Path) -> None:
+    workspace, private_output, prepare_result = run_prepare(tmp_path)
+    assert prepare_result.returncode == 0, prepare_result.stderr
+
+    report_dir = workspace / "Student 0001"
+    report_dir.mkdir()
+    (report_dir / "report.json").write_text("{not valid json", encoding="utf-8", newline="\n")
+
+    output = tmp_path / "final"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "slaif-defense-grading.py",
+            "finalize",
+            "--workspace",
+            str(workspace),
+            "--private-output",
+            str(private_output),
+            "--output",
+            str(output),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    with (output / "missing_reports.csv").open("r", encoding="utf-8", newline="") as f:
+        missing_rows = list(csv.DictReader(f))
+    assert len(missing_rows) == 2
+    by_pseudonym = {row["pseudonym"]: row for row in missing_rows}
+    assert "report.json is not valid JSON" in by_pseudonym["Student 0001"]["reason"]
+    assert by_pseudonym["Student 0002"]["reason"] == "report.json was not found in the pseudonymized workspace"
+    assert not (output / "instructor_reports" / "Ana_Novak" / "report.pdf").exists()
+
+    with (output / "final_report.csv").open("r", encoding="utf-8", newline="") as f:
+        final_report_rows = list(csv.DictReader(f))
+    assert len(final_report_rows) == 2
+    for row in final_report_rows:
+        assert row["all_tasks_implemented"] == "Unknown"
+        assert row["copying_indications"] == "Unknown"
+        assert row["llm_indications"] == "Unknown"
+        assert row["notes"] == "No report"
+    assert (output / "final_report.pdf").exists()
+
+
+def test_finalize_long_notes_stay_on_one_page_in_final_report(tmp_path: Path) -> None:
+    """Long agent notes must not make a final-report row taller than a page."""
+    workspace, private_output, prepare_result = run_prepare(tmp_path)
+    assert prepare_result.returncode == 0, prepare_result.stderr
+
+    long_notes = "Uniform comments and identical helper structure across all files; "
+    long_notes += "worth probing in oral verification on the edit-distance implementation. "
+    long_notes *= 5  # ~1.6k characters: too tall for one table row when unclipped
+
+    report = {
+        "pseudonym": "Student 0001",
+        "assignment_submitted": True,
+        "all_tasks_implemented": True,
+        "task_details": [
+            {"task": "compute edit distance", "implemented": True, "evidence": "main.py lines 1-9"},
+            {"task": "report the results", "implemented": True, "evidence": "main.py lines 20-31"},
+        ],
+        "looks_llm_generated": "likely",
+        "llm_generation_indicators": ["uniform comment style in main.py lines 1-9"],
+        "code_copy_indications": [],
+        "notes": long_notes,
+    }
+    (workspace / "Student 0001").mkdir()
+    (workspace / "Student 0001" / "report.json").write_text(
+        json.dumps(report, indent=2) + "\n", encoding="utf-8", newline="\n"
+    )
+
+    output = tmp_path / "final"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "slaif-defense-grading.py",
+            "finalize",
+            "--workspace",
+            str(workspace),
+            "--private-output",
+            str(private_output),
+            "--output",
+            str(output),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+    final_report_pdf = output / "final_report.pdf"
+    assert final_report_pdf.exists()
+    assert final_report_pdf.read_bytes().startswith(b"%PDF-")
+
+    with (output / "final_report.csv").open("r", encoding="utf-8", newline="") as f:
+        final_rows = list(csv.DictReader(f))
+    ana = next(row for row in final_rows if row["full_name"] == "Ana Novak")
+    assert len(ana["notes"]) == 240
+    assert ana["notes"].endswith("...")
+    assert long_notes not in ana["notes"]
+
+    # The untruncated notes stay in the named student report.
+    named_report = json.loads((output / "instructor_reports" / "Ana_Novak" / "report.json").read_text(encoding="utf-8"))
+    assert named_report["notes"] == long_notes
 
 
 def test_finalize_uses_deterministic_safe_paths_for_duplicate_names(tmp_path: Path) -> None:
@@ -542,8 +670,20 @@ def test_finalize_uses_deterministic_safe_paths_for_duplicate_names(tmp_path: Pa
     )
     write_text(private_output / "student_outputs" / "Student_0001.txt", "Student 0001 content\n")
     write_text(private_output / "student_outputs" / "Student_0002.txt", "Student 0002 content\n")
-    write_text(workspace / "Student 0001" / "report_aspects.md", "# Poročilo za ustni zagovor: Student 0001\n")
-    write_text(workspace / "Student 0002" / "report_aspects.md", "# Poročilo za ustni zagovor: Student 0002\n")
+    valid_report = json.dumps(
+        {
+            "pseudonym": "Student 0001",
+            "assignment_submitted": True,
+            "all_tasks_implemented": True,
+            "task_details": [],
+            "looks_llm_generated": "uncertain",
+            "llm_generation_indicators": [],
+            "code_copy_indications": [],
+            "notes": "",
+        }
+    )
+    write_text(workspace / "Student 0001" / "report.json", valid_report)
+    write_text(workspace / "Student 0002" / "report.json", valid_report)
 
     result = subprocess.run(
         [
@@ -564,15 +704,19 @@ def test_finalize_uses_deterministic_safe_paths_for_duplicate_names(tmp_path: Pa
     )
 
     assert result.returncode == 0, result.stderr
-    assert (output / "instructor_reports" / "Ana_Novak" / "report_aspects.md").exists()
-    assert (output / "instructor_reports" / "Ana_Novak__Student_0002" / "report_aspects.md").exists()
+    assert (output / "instructor_reports" / "Ana_Novak" / "report.json").exists()
+    assert (output / "instructor_reports" / "Ana_Novak" / "report.pdf").exists()
+    assert (output / "instructor_reports" / "Ana_Novak__Student_0002" / "report.json").exists()
+    assert (output / "instructor_reports" / "Ana_Novak__Student_0002" / "report.pdf").exists()
     assert (output / "student_outputs" / "Ana_Novak.txt").exists()
     assert (output / "student_outputs" / "Ana_Novak__Student_0002.txt").exists()
 
     with (output / "final_index.csv").open("r", encoding="utf-8", newline="") as f:
         rows = list(csv.DictReader(f))
-    assert rows[0]["report_file"] == "instructor_reports/Ana_Novak/report_aspects.md"
-    assert rows[1]["report_file"] == "instructor_reports/Ana_Novak__Student_0002/report_aspects.md"
+    assert rows[0]["report_pdf_file"] == "instructor_reports/Ana_Novak/report.pdf"
+    assert rows[0]["report_json_file"] == "instructor_reports/Ana_Novak/report.json"
+    assert rows[1]["report_pdf_file"] == "instructor_reports/Ana_Novak__Student_0002/report.pdf"
+    assert rows[1]["report_json_file"] == "instructor_reports/Ana_Novak__Student_0002/report.json"
     assert rows[0]["student_output_file"] == "student_outputs/Ana_Novak.txt"
     assert rows[1]["student_output_file"] == "student_outputs/Ana_Novak__Student_0002.txt"
 
@@ -595,9 +739,12 @@ def test_prepare_creates_pseudonymized_workspace_and_private_outputs(tmp_path: P
     assert process_sh.stat().st_mode & stat.S_IXUSR
     assert "Phase 1" not in process_text
     assert "cat .slaif_prompts" not in process_text
-    assert process_text.count("codex --ask-for-approval never --full-auto exec --skip-git-repo-check") == 2
-    assert process_text.index("Run oral-verification report for Student 0001") < process_text.index(
-        "Run oral-verification report for Student 0002"
+    default_codex_command = (
+        f"codex -p {DEFAULT_CODEX_PROFILE} -c model_reasoning_effort=medium --ask-for-approval never -s workspace-write exec --skip-git-repo-check"
+    )
+    assert process_text.count(default_codex_command) == 2
+    assert process_text.index("Run submission assessment for Student 0001") < process_text.index(
+        "Run submission assessment for Student 0002"
     )
     assert "Ana Novak" not in process_text
     assert "Boris Kovac" not in process_text
@@ -609,33 +756,36 @@ def test_prepare_creates_pseudonymized_workspace_and_private_outputs(tmp_path: P
         encoding="utf-8"
     )
     agents_text = agents_md.read_text(encoding="utf-8")
-    assert "Run oral-verification report for Student 0001" in agents_text
+    assert "Run submission assessment for Student 0001" in agents_text
     assert "students.csv" in agents_text
     assert "associations.csv" in agents_text
     assert "task.*" in agents_text
     assert "task.pdf" in agents_text
-    assert "report_aspects_template.md" in agents_text
-    assert "Use `report_aspects_template.md` as the mandatory output template" in agents_text
-    assert "Preserve the headings and template structure exactly" in agents_text
-    assert "Do not invent questions" in agents_text
-    assert "Do not expose expected answers to students" in agents_text
-    assert "Vidik poročila oziroma rešitve" in agents_text
-    assert "Zakaj ta vidik izstopa" in agents_text
-    assert "Vprašanje za študenta" in agents_text
-    assert "Pričakovani odgovor" in agents_text
+    assert "report_template.json" in agents_text
+    assert "`report_template.json` is the mandatory schema" in agents_text
+    assert "assignment_submitted" in agents_text
+    assert "all_tasks_implemented" in agents_text
+    assert "looks_llm_generated" in agents_text
+    assert "code_copy_indications" in agents_text
+    assert "other_student_pseudonym" in agents_text
+    assert "Do not invent evidence, line numbers, or indicators" in agents_text
     assert "preprocessing" in agents_text
     assert "already done locally" in agents_text
     assert "Do not redo preprocessing" in agents_text
+    assert "reasonably strong" in agents_text
+    assert "Similar standard function calls" in agents_text
+    assert "single-table final overview PDF (`final_report.pdf`)" in agents_text
     assert "The only student submission files are the files listed in `associations.csv`." in agents_text
     assert "Do not accuse AI use" in agents_text
     for value in FORBIDDEN_IDENTIFIERS:
         assert value not in agents_text
 
-    report_template = workspace / "report_aspects_template.md"
+    report_template = workspace / "report_template.json"
     assert report_template.exists()
     assert report_template.read_text(encoding="utf-8") == (
-        REPO_ROOT / "templates" / "workspace" / "report_aspects_template.md"
+        REPO_ROOT / "templates" / "workspace" / "report_template.json"
     ).read_text(encoding="utf-8")
+    json.loads(report_template.read_text(encoding="utf-8"))
     for value in FORBIDDEN_IDENTIFIERS:
         assert value not in report_template.read_text(encoding="utf-8")
 
@@ -727,6 +877,322 @@ def test_prepare_creates_pseudonymized_workspace_and_private_outputs(tmp_path: P
     assert "`student_outputs_index.csv` maps those pseudonymized files back to real roster rows" in report
 
 
+
+def test_prepare_codex_profile_none_omits_profile_flag(tmp_path: Path) -> None:
+    workspace, _private_output, result = run_prepare(
+        tmp_path,
+        extra_args=["--codex-profile", "none", "--codex-reasoning-effort", "none"],
+    )
+
+    assert result.returncode == 0, result.stderr
+    process_text = (workspace / "process.sh").read_text(encoding="utf-8")
+    assert "-p " not in process_text
+    assert "-c model_reasoning_effort" not in process_text
+    assert process_text.count("codex --ask-for-approval never -s workspace-write exec --skip-git-repo-check") == 2
+    assert "Ana Novak" not in process_text
+    assert "Boris Kovac" not in process_text
+
+
+def test_prepare_codex_reasoning_effort_low_is_rendered(tmp_path: Path) -> None:
+    workspace, _private_output, result = run_prepare(
+        tmp_path,
+        extra_args=["--codex-reasoning-effort", "low"],
+    )
+
+    assert result.returncode == 0, result.stderr
+    process_text = (workspace / "process.sh").read_text(encoding="utf-8")
+    assert process_text.count(
+        f"codex -p {DEFAULT_CODEX_PROFILE} -c model_reasoning_effort=low --ask-for-approval never -s workspace-write exec --skip-git-repo-check"
+    ) == 2
+    assert "Ana Novak" not in process_text
+    assert "Boris Kovac" not in process_text
+
+def test_prepare_reads_utf16_bom_roster(tmp_path: Path) -> None:
+    students_csv = tmp_path / "students.csv"
+    roster = (
+        "name,surname,email,student_id\n"
+        "Ana,Novak,ana.novak@example.invalid,63240001\n"
+        "Boris,Kovac,boris.kovac@example.invalid,63240002\n"
+    )
+    students_csv.write_bytes(roster.encode("utf-16"))  # UTF-16 LE with BOM, as some LMS/Excel exports produce
+
+    task_file = tmp_path / "assignment.tex"
+    write_text(task_file, "\\section{Synthetic Task}\n")
+    input_zip = tmp_path / "moodle_export.zip"
+    build_synthetic_moodle_zip(input_zip)
+
+    workspace = tmp_path / "workspace" / "lab-agent"
+    private_output = tmp_path / "workspace" / "lab-private"
+    command = [
+        sys.executable,
+        "slaif-defense-grading.py",
+        "prepare",
+        "--input-file",
+        str(input_zip),
+        "--students-csv",
+        str(students_csv),
+        "--task-file",
+        str(task_file),
+        "--workspace",
+        str(workspace),
+        "--private-output",
+        str(private_output),
+    ]
+    result = subprocess.run(command, cwd=REPO_ROOT, capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0, result.stderr
+    assert (workspace / "students.csv").read_text(encoding="utf-8") == (
+        "name,surname,full_name\n"
+        "Student,0001,Student 0001\n"
+        "Student,0002,Student 0002\n"
+    )
+
+    map_path = private_output / "pseudonym_map.csv"
+    with map_path.open("r", encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert [row["pseudonym"] for row in rows] == ["Student 0001", "Student 0002"]
+    assert rows[0]["name"] == "Ana"
+    assert rows[0]["surname"] == "Novak"
+    assert rows[1]["name"] == "Boris"
+    assert rows[1]["surname"] == "Kovac"
+
+
+def build_explicit_id_synthetic_zip(path: Path) -> None:
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr(
+            "Ana Novak=ana.novak@example.invalid=63240001_92312_ab_cd/main.py",
+            'print("alpha bravo charlie")\n',
+        )
+        zf.writestr(
+            "Boris Kovac=boris.kovac@example.invalid=63240002_92313_ef_gh/notes.md",
+            "# delta echo foxtrot\n",
+        )
+        zf.writestr(
+            "Nobody Here=ghost@example.invalid=99999999_1_ab_cd/main.py",
+            "print('nobody here')\n",
+        )
+
+
+def build_conflicting_explicit_id_zip(path: Path) -> None:
+    with zipfile.ZipFile(path, "w") as zf:
+        # email points at Boris Kovac while the student_id points at Ana Novak
+        zf.writestr("Ana Novak=boris.kovac@example.invalid=63240001_1_ab_cd/main.py", "print('x')\n")
+
+
+def run_explicit_id_prepare(tmp_path: Path, zip_builder) -> tuple[Path, Path, subprocess.CompletedProcess[str]]:
+    students_csv = tmp_path / "students.csv"
+    write_text(
+        students_csv,
+        "name,surname,email,student_id\n"
+        "Ana,Novak,ana.novak@example.invalid,63240001\n"
+        "Boris,Kovac,boris.kovac@example.invalid,63240002\n",
+    )
+    task_file = tmp_path / "assignment.tex"
+    write_text(task_file, "\\section{Synthetic Task}\n")
+    input_zip = tmp_path / "moodle_export.zip"
+    zip_builder(input_zip)
+
+    workspace = tmp_path / "workspace" / "lab-agent"
+    private_output = tmp_path / "workspace" / "lab-private"
+    command = [
+        sys.executable,
+        "slaif-defense-grading.py",
+        "prepare",
+        "--input-file",
+        str(input_zip),
+        "--students-csv",
+        str(students_csv),
+        "--task-file",
+        str(task_file),
+        "--workspace",
+        str(workspace),
+        "--private-output",
+        str(private_output),
+    ]
+    result = subprocess.run(command, cwd=REPO_ROOT, capture_output=True, text=True, check=False)
+    return workspace, private_output, result
+
+
+def test_prepare_matches_folders_with_explicit_email_and_id(tmp_path: Path) -> None:
+    workspace, private_output, result = run_explicit_id_prepare(tmp_path, build_explicit_id_synthetic_zip)
+
+    assert result.returncode == 0, result.stderr
+
+    with (workspace / "associations.csv").open("r", encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert [row["full_name"] for row in rows] == ["Student 0001", "Student 0002"]
+    assert rows[0]["status"] == "matched"
+    assert rows[1]["status"] == "matched"
+    assert rows[0]["associated_txt_files"] == "Student_0001.txt"
+    assert rows[1]["associated_txt_files"] == "Student_0002.txt"
+
+    assert "alpha bravo charlie" in (workspace / "Student_0001.txt").read_text(encoding="utf-8")
+    assert "delta echo foxtrot" in (workspace / "Student_0002.txt").read_text(encoding="utf-8")
+
+    report = (private_output / "preprocessing_report.md").read_text(encoding="utf-8")
+    assert "Matched students: 2" in report
+    assert "Nobody Here=ghost@example.invalid=99999999_1_ab_cd" in report
+
+    workspace_text = "\n".join(
+        path.read_text(encoding="utf-8", errors="replace") for path in workspace.rglob("*") if path.is_file()
+    )
+    assert "Nobody Here" not in workspace_text
+    assert "ghost@example.invalid" not in workspace_text
+    assert "99999999" not in workspace_text
+
+
+def test_prepare_explicit_identifier_conflict_stays_unmatched(tmp_path: Path) -> None:
+    workspace, private_output, result = run_explicit_id_prepare(tmp_path, build_conflicting_explicit_id_zip)
+
+    assert result.returncode == 0, result.stderr
+
+    with (workspace / "associations.csv").open("r", encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert all(row["status"] == "unresolved" for row in rows)
+
+    report = (private_output / "preprocessing_report.md").read_text(encoding="utf-8")
+    assert "Matched students: 0" in report
+    assert "Ana Novak=boris.kovac@example.invalid=63240001_1_ab_cd" in report
+
+
+def build_encrypted_zip(path: Path, entry_name: str = "secret.py", content: bytes = b"print('secret')\n", password: str = "secret") -> None:
+    """Write a minimal ZIP using PKZIP traditional password encryption (stdlib cannot write these)."""
+    import struct
+    import zlib
+
+    def update_keys(keys: tuple, byte: int) -> tuple:
+        key0, key1, key2 = keys
+        key0 = zlib.crc32(bytes([byte]), key0) & 0xFFFFFFFF
+        key1 = (key1 + (key0 & 0xFF)) & 0xFFFFFFFF
+        key1 = (key1 * 134775813 + 1) & 0xFFFFFFFF
+        key2 = zlib.crc32(bytes([(key1 >> 24) & 0xFF]), key2) & 0xFFFFFFFF
+        return key0, key1, key2
+
+    def prng_byte(keys: tuple) -> int:
+        temp = (keys[2] | 2) & 0xFFFF
+        return (temp * (temp ^ 1) >> 8) & 0xFF
+
+    keys = (0x12345678, 0x5678ABCD, 0xBADCAFED)
+    for byte in password.encode("latin-1"):
+        keys = update_keys(keys, byte)
+
+    header = bytes(prng_byte(keys) for _ in range(10))
+    pwd = password.encode("latin-1")[0]
+    header += bytes([pwd & 0xFF, (pwd >> 8) & 0xFF])
+
+    encrypted = bytearray()
+    for byte in content:
+        encrypted.append(byte ^ prng_byte(keys))
+        keys = update_keys(keys, byte)
+
+    data = header + bytes(encrypted)
+    name = entry_name.encode()
+    crc = zlib.crc32(content) & 0xFFFFFFFF
+    local = struct.pack("<IHHHHHIIIHH", 0x04034B50, 20, 0x0001, 0, 0, 0, crc, len(data), len(content), len(name), 0) + name
+    central = struct.pack(
+        "<IHHHHHHIIIHHHHHII",
+        0x02014B50, 20, 20, 0x0001, 0, 0, 0, crc, len(data), len(content), len(name), 0, 0, 0, 0, 0, 0,
+    ) + name
+    eocd = struct.pack("<IHHHHIIH", 0x06054B50, 0, 0, 1, 1, len(central), 0, 0)
+    path.write_bytes(local + central + eocd)
+
+
+def test_prepare_skips_encrypted_nested_zip_and_reports_it(tmp_path: Path) -> None:
+    students_csv = tmp_path / "students.csv"
+    write_text(
+        students_csv,
+        "name,surname,email,student_id\n"
+        "Ana,Novak,ana.novak@example.invalid,63240001\n"
+        "Boris,Kovac,boris.kovac@example.invalid,63240002\n",
+    )
+    task_file = tmp_path / "assignment.tex"
+    write_text(task_file, "\\section{Synthetic Task}\n")
+
+    input_zip = tmp_path / "moodle_export.zip"
+    with zipfile.ZipFile(input_zip, "w") as zf:
+        encrypted = tmp_path / "submission.zip"
+        build_encrypted_zip(encrypted)
+        zf.write(encrypted, "Ana Novak_12345_assignsubmission_file/submission.zip")
+        zf.writestr("Boris Kovac_67890_assignsubmission_file/main.py", "print('golf hotel juliet')\n")
+
+    workspace = tmp_path / "workspace" / "lab-agent"
+    private_output = tmp_path / "workspace" / "lab-private"
+    command = [
+        sys.executable,
+        "slaif-defense-grading.py",
+        "prepare",
+        "--input-file",
+        str(input_zip),
+        "--students-csv",
+        str(students_csv),
+        "--task-file",
+        str(task_file),
+        "--workspace",
+        str(workspace),
+        "--private-output",
+        str(private_output),
+    ]
+    result = subprocess.run(command, cwd=REPO_ROOT, capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0, result.stderr
+
+    with (workspace / "associations.csv").open("r", encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+    # the only readable artifact is the "no submission" marker; the encrypted ZIP is reported privately
+    assert rows[0]["status"] == "matched"
+    assert "No matched submission was found for this roster student." in (workspace / "Student_0001.txt").read_text(encoding="utf-8")
+    assert rows[1]["status"] == "matched"
+    assert "golf hotel juliet" in (workspace / "Student_0002.txt").read_text(encoding="utf-8")
+
+    report = (private_output / "preprocessing_report.md").read_text(encoding="utf-8")
+    assert "## Skipped Nested ZIPs" in report
+    assert "Ana Novak_12345_assignsubmission_file/submission.zip" in report
+
+
+def test_prepare_unwraps_single_top_level_container_folder(tmp_path: Path) -> None:
+    students_csv = tmp_path / "students.csv"
+    write_text(
+        students_csv,
+        "name,surname,email,student_id\n"
+        "Ana,Novak,ana.novak@example.invalid,63240001\n"
+        "Boris,Kovac,boris.kovac@example.invalid,63240002\n",
+    )
+    task_file = tmp_path / "assignment.tex"
+    write_text(task_file, "\\section{Synthetic Task}\n")
+
+    input_zip = tmp_path / "moodle_export.zip"
+    with zipfile.ZipFile(input_zip, "w") as zf:
+        zf.writestr("ass1/Ana Novak_12345_assignsubmission_file/main.py", "print('kilo lima mike')\n")
+        zf.writestr("ass1/Boris Kovac_67890_assignsubmission_file/notes.md", "# november oscar papa\n")
+
+    workspace = tmp_path / "workspace" / "lab-agent"
+    private_output = tmp_path / "workspace" / "lab-private"
+    command = [
+        sys.executable,
+        "slaif-defense-grading.py",
+        "prepare",
+        "--input-file",
+        str(input_zip),
+        "--students-csv",
+        str(students_csv),
+        "--task-file",
+        str(task_file),
+        "--workspace",
+        str(workspace),
+        "--private-output",
+        str(private_output),
+    ]
+    result = subprocess.run(command, cwd=REPO_ROOT, capture_output=True, text=True, check=False)
+
+    assert result.returncode == 0, result.stderr
+
+    with (workspace / "associations.csv").open("r", encoding="utf-8", newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert all(row["status"] == "matched" for row in rows)
+    assert "kilo lima mike" in (workspace / "Student_0001.txt").read_text(encoding="utf-8")
+    assert "november oscar papa" in (workspace / "Student_0002.txt").read_text(encoding="utf-8")
+
+
 def test_prepare_can_explicitly_include_opaque_documents_with_warning(tmp_path: Path) -> None:
     workspace, private_output, result = run_prepare(tmp_path, include_opaque_documents=True)
 
@@ -800,7 +1266,7 @@ def test_messy_prepare_default_mode_end_to_end_audit(tmp_path: Path) -> None:
     assert (workspace / "associations.csv").exists(), tree
     assert (workspace / "task.tex").read_text(encoding="utf-8").startswith("\\section{Synthetic Messy Assignment}"), tree
     assert not (workspace / "task.pdf").exists(), tree
-    assert (workspace / "report_aspects_template.md").exists(), tree
+    assert (workspace / "report_template.json").exists(), tree
     assert (workspace / "process.sh").exists(), tree
     assert not (workspace / ".slaif_prompts").exists(), tree
 
@@ -818,10 +1284,10 @@ def test_messy_prepare_default_mode_end_to_end_audit(tmp_path: Path) -> None:
     assert process_sh.stat().st_mode & stat.S_IXUSR
     assert "Phase 1" not in process_text
     assert "cat .slaif_prompts" not in process_text
-    assert process_text.count("Run oral-verification report for Student ") == 5
+    assert process_text.count("Run submission assessment for Student ") == 5
     for idx in range(1, 5):
-        assert process_text.index(f"Run oral-verification report for Student {idx:04d}") < process_text.index(
-            f"Run oral-verification report for Student {idx + 1:04d}"
+        assert process_text.index(f"Run submission assessment for Student {idx:04d}") < process_text.index(
+            f"Run submission assessment for Student {idx + 1:04d}"
         )
 
     agents_text = (workspace / "AGENTS.md").read_text(encoding="utf-8")
@@ -830,18 +1296,19 @@ def test_messy_prepare_default_mode_end_to_end_audit(tmp_path: Path) -> None:
     assert "associations.csv" in agents_text
     assert "task.*" in agents_text
     assert "task.pdf" in agents_text
-    assert "report_aspects_template.md" in agents_text
+    assert "report_template.json" in agents_text
     assert "The only student submission files are the files listed in `associations.csv`." in agents_text
-    assert "Preserve the headings and template structure exactly" in agents_text
-    assert "<Full Name>/report_aspects.md" in agents_text
+    assert "<Full Name>/report.json" in agents_text
     assert "Do not infer, request, or reconstruct real student identities." in agents_text
     assert "Do not accuse AI use" in agents_text
     assert "Do not redo preprocessing" in agents_text
     assert "Run Phase 1" not in agents_text
     assert "Build associations" not in agents_text
 
-    template_text = (workspace / "report_aspects_template.md").read_text(encoding="utf-8")
-    assert "# Poročilo za ustni zagovor: <Full Name>" in template_text
+    template_text = (workspace / "report_template.json").read_text(encoding="utf-8")
+    template_schema = json.loads(template_text)
+    assert "code_copy_indications" in template_schema
+    assert "other_student_pseudonym" in template_schema["code_copy_indications"][0]
     for value in MESSY_FORBIDDEN_IDENTIFIERS:
         assert value not in template_text
 
@@ -989,3 +1456,45 @@ def test_workspace_generated_text_and_filenames_do_not_contain_real_identifiers(
             text = path.read_text(encoding="utf-8")
             for value in FORBIDDEN_IDENTIFIERS:
                 assert value not in text
+
+def test_pdf_report_renders_with_core_fonts(tmp_path: Path, monkeypatch) -> None:
+    import slaif_defense_grading.pdf_report as pdf_report
+
+    monkeypatch.setattr(pdf_report, "find_font_pair", lambda: None)
+    report = {
+        "pseudonym": "Student 0001",
+        "assignment_submitted": True,
+        "all_tasks_implemented": False,
+        "task_details": [
+            {"task": "compute edit distance", "implemented": True, "evidence": "main.py lines 1-9"},
+            {"task": "report the results", "implemented": False, "evidence": "not present"},
+        ],
+        "looks_llm_generated": "likely",
+        "llm_generation_indicators": ["uniform comment style in main.py lines 1-9"],
+        "code_copy_indications": [
+            {
+                "other_student_pseudonym": "Student 0002",
+                "this_file": "main.py",
+                "this_lines": "12-34",
+                "other_file": "sol.py",
+                "other_lines": "3-11",
+                "evidence": "identical helper structure",
+            }
+        ],
+        "notes": "Brez posebnih opomb.",
+    }
+    output_path = pdf_report.render_assessment_pdf(
+        report, "Ana Novak", "Student 0001", {"Student 0002": "Boris Kovac"}, tmp_path / "report.pdf"
+    )
+    pdf_bytes = output_path.read_bytes()
+    assert pdf_bytes.startswith(b"%PDF-")
+    assert b"%%EOF" in pdf_bytes[-32:]
+    assert b"Ana Novak" in pdf_bytes
+    assert b"Boris Kovac" in pdf_bytes
+    assert b"1. Was the assignment submitted?" in pdf_bytes
+    assert b"2. Are all the tasks implemented?" in pdf_bytes
+    assert b"3. Does the code look LLM-generated?" in pdf_bytes
+    assert b"4. Indications of copying code from another student?" in pdf_bytes
+    assert b"lines 12-34" in pdf_bytes
+    assert b"lines 3-11" in pdf_bytes
+    assert b"not a finding of misconduct" not in pdf_bytes or b"does not prove" in pdf_bytes

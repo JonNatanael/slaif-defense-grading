@@ -27,8 +27,8 @@ This workflow creates targeted oral-verification questions from the submitted ma
 The supported workflow is:
 
 1. `prepare`: run local preprocessing and create a pseudonymized agent workspace.
-2. Run `process.sh`: ask the agent to generate one pseudonymized oral-verification report per student.
-3. `finalize`: locally map pseudonymized reports back to private named instructor outputs.
+2. Run `process.sh`: ask the agent to write one pseudonymized submission-assessment report (`report.json`) per student.
+3. `finalize`: locally map pseudonymized reports back to private named instructor outputs, rendering a human-readable `report.pdf` next to the machine-readable `report.json`, plus a single-table `final_report.pdf` overview of all students.
 
 Prepare the pseudonymized workspace:
 
@@ -64,7 +64,7 @@ python3 slaif-defense-grading.py prepare \
 - generates pseudonymized `students.csv`;
 - generates pseudonymized `associations.csv`;
 - copies `templates/workspace/AGENTS.md` into the workspace as `AGENTS.md`;
-- copies `templates/workspace/report_aspects_template.md` into the workspace;
+- copies `templates/workspace/report_template.json` (the mandatory report schema) into the workspace;
 - renders executable `process.sh`;
 - writes pseudonymized student-output copies for instructor/student review;
 - writes private `student_outputs_index.csv`;
@@ -83,7 +83,7 @@ lab-agent/
   Student_0002.txt
   associations.csv
   process.sh
-  report_aspects_template.md
+  report_template.json
   students.csv
   task.pdf
 ```
@@ -112,7 +112,7 @@ Student,0002,Student 0002
 
 The instructor assignment file is copied under a canonical non-private workspace name. For example, `assignment.pdf` becomes `task.pdf`, `task.tex` remains `task.tex`, and other suffixes become `task<suffix>`. The original assignment basename is not preserved.
 
-`report_aspects_template.md` defines the mandatory structure for every generated `report_aspects.md`. The generated workspace `AGENTS.md` instructs the later grading agent to follow this template and preserve its headings.
+`report_template.json` is the mandatory schema for every generated `report.json`. Each report assesses, for one student: whether the assignment was submitted, whether all required tasks are implemented (by what they do, not by function names), whether the code looks LLM-generated, and whether there are indications of copying code from another student (with the other student's pseudonym and line numbers in both submissions). The generated workspace `AGENTS.md` instructs the later assessment agent to follow this schema exactly.
 
 `student_outputs/` contains pseudonymized copies of the same concatenated `Student_XXXX.txt` files that the agent sees. These files are intended as per-student review material that an instructor can retrieve and show individually. The private `student_outputs_index.csv` and `pseudonym_map.csv` identify which file belongs to which real student and must not be shared wholesale with students.
 
@@ -124,7 +124,7 @@ Before running `process.sh`, inspect:
 
 - `workspace/lab-agent/` and confirm generated filenames are pseudonymized;
 - `workspace/lab-agent/students.csv` and `workspace/lab-agent/associations.csv`;
-- `workspace/lab-agent/report_aspects_template.md`;
+- `workspace/lab-agent/report_template.json`;
 - `workspace/lab-private/preprocessing_report.md`.
 
 The agent-facing workspace should contain no real names, emails, student IDs, or original LMS folder names. The private report may contain real matching details and must remain local.
@@ -136,17 +136,23 @@ cd workspace/lab-agent
 ./process.sh
 ```
 
-`process.sh` runs one Codex command per pseudonymized student in roster order:
+`process.sh` detaches from the interactive terminal (`exec < /dev/null`), so each `codex exec` run exits on its own and the next student starts automatically. It runs one Codex command per pseudonymized student in roster order:
 
 ```bash
-codex --ask-for-approval never --full-auto exec --skip-git-repo-check "Run oral-verification report for Student 0001"
+codex -p qwen-neumann --ask-for-approval never -s workspace-write exec --skip-git-repo-check "Run submission assessment for Student 0001"
 ```
+
+### Model Selection
+
+The model used for submission analysis is not configured in this repository; it is whatever the Codex CLI runs with the profile rendered into `process.sh`. `prepare` renders the profile from `--codex-profile` (default `qwen-neumann`, the local Qwen 3.8 27B profile on Neumann) as `-p <profile>` in every Codex command. A profile is a `$CODEX_HOME/<profile>.config.toml` file (normally `~/.codex/<profile>.config.toml`); it is never copied into the generated workspace. Pass `--codex-profile none` to omit the flag and let Codex use its own default model, or `--codex-profile <other>` for a different local profile.
+
+The reasoning effort is rendered the same way, from `--codex-reasoning-effort` as `-c model_reasoning_effort=<effort>` in every Codex command. The qwen-neumann model supports `low`, `medium`, and `xhigh`; higher values are more thorough but much slower per student, which matters when `process.sh` runs ~100 students. The default is `medium`; use `low` for the fastest full pass or `xhigh` for harder runs. Pass `--codex-reasoning-effort none` to omit the flag and fall back to the profile/CLI default.
 
 There is no agent-run Phase 1. Association generation is local preprocessing and is already complete before `process.sh` runs.
 
 ## Finalize Named Local Outputs
 
-After the agent writes reports such as `Student 0001/report_aspects.md`, run:
+After the agent writes reports such as `Student 0001/report.json`, run:
 
 ```bash
 python3 slaif-defense-grading.py finalize \
@@ -160,24 +166,29 @@ Final output is private/local and may contain real student identities:
 ```text
 final/
   final_index.csv
+  final_report.csv
+  final_report.pdf
   finalize_report.md
   missing_reports.csv
   instructor_reports/
     Mila_Kranjc/
-      report_aspects.md
+      report.pdf
+      report.json
   student_outputs/
     Mila_Kranjc.txt
 ```
 
-`finalize` maps pseudonymized reports and student-output text files back to real roster rows using the private maps. It does not modify the pseudonymized workspace. Use `--strict` if missing agent reports should make finalization fail.
+`finalize` validates each `report.json` against the schema, maps pseudonymized reports and student-output text files back to real roster rows using the private maps, and renders the human-readable `report.pdf` (cross-referenced students are resolved to their real names in the private PDF). It does not modify the pseudonymized workspace. Use `--strict` if missing agent reports should make finalization fail. PDF rendering requires `fpdf2` (`pip install fpdf2`); without it the JSON output is still produced and the missing PDF is listed under "PDF Rendering Warnings" in `finalize_report.md`.
+
+`finalize` also renders the final report: a single-table overview (`final_report.pdf`, machine-readable `final_report.csv`) with one row per roster student showing whether all tasks are implemented, whether there are reasonably strong indications of copying (with the cross-referenced student resolved to their real name; similar standard function calls are not indications), whether there are reasonably strong indications of LLM use, and short notes. It is a fast reference for the teaching assistant when evaluating submissions in person with the student. Students without a valid agent report show `Unknown` and the note `No report`.
 
 ## What Can Be Shown To Students
 
 `final/student_outputs/<Name>.txt` is the pseudonymized concatenated submission text that the agent saw. It may be shown individually to the corresponding student when useful for review.
 
-`final/instructor_reports/<Name>/report_aspects.md` is instructor-facing. It contains expected answers and should not be sent wholesale to students.
+`final/instructor_reports/<Name>/report.pdf` and `report.json` are instructor-facing. They contain assessments, indicators, and line-number evidence for human review, and should not be sent wholesale to students.
 
-Do not share `pseudonym_map.csv`, `student_outputs_index.csv`, or `final_index.csv` wholesale with students.
+Do not share `pseudonym_map.csv`, `student_outputs_index.csv`, `final_index.csv`, or the final report (`final_report.pdf`/`final_report.csv`) wholesale with students.
 
 ## AGENTS.md Roles
 
@@ -199,7 +210,7 @@ The default workspace is pseudonymized text-only material.
 - The private pseudonym map stays outside the workspace.
 - Unmatched LMS folders are not copied into the workspace and appear only in the private report.
 - Generated filenames, CSVs, shell scripts, `AGENTS.md`, and text/source/notebook files are leak-checked for known roster identifiers.
-- `report_aspects_template.md` is copied into the workspace and included in the same text leak-check boundary.
+- `report_template.json` is copied into the workspace and included in the same text leak-check boundary.
 - Known full names, emails, and `student_id` values are scrubbed from generated text outputs before the workspace leak check runs.
 - Private `student_outputs/` files are pseudonymized copies of the generated agent input text files and must not contain real names, emails, student IDs, or LMS folder names.
 
@@ -208,6 +219,17 @@ Matching is conservative. LMS folders are matched to roster rows by exact normal
 ```text
 Ana Novak_12345_assignsubmission_file -> Ana Novak
 ```
+
+If the name prefix does not match, `prepare` falls back to explicit `=value` identifier tokens embedded in the LMS folder name, as produced by some LMS student-list exports:
+
+```text
+Ana Novak=ana.novak@example.invalid=63240001_92312_ab_cd
+```
+
+- `=value` tokens containing `@` are matched by exact email against the roster `email` column;
+- leading digit runs of the remaining `=value` tokens are matched by exact `student_id` against the roster `student_id` column.
+
+Identifier matching only succeeds when the identifier exists exactly once in the official roster and the email and id evidence agree; otherwise the folder stays unmatched and appears only in the private preprocessing report. Roster CSV files may be UTF-8 or UTF-16 (with or without BOM); a raw tab-separated LMS student list still needs to be converted to a comma-separated `name,surname,...` roster first (local instructor-side preprocessing).
 
 ## Opaque Documents
 
@@ -286,7 +308,7 @@ templates/
   process.sh.tpl
   workspace/
     AGENTS.md
-    report_aspects_template.md
+    report_template.json
 
 tests/
 ```

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import csv
+import json
 import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
+
+from .pdf_report import FINAL_REPORT_CSV_COLUMNS, render_assessment_pdf, render_final_report_pdf
 
 
 @dataclass(frozen=True)
@@ -31,6 +34,7 @@ class FinalizeResult:
     found_reports: int
     missing_reports: int
     copied_student_outputs: int
+    final_report_pdf: str
     output: Path
 
 
@@ -42,7 +46,8 @@ FINAL_INDEX_BASE_COLUMNS = [
 ]
 FINAL_INDEX_TRAILING_COLUMNS = [
     "report_status",
-    "report_file",
+    "report_pdf_file",
+    "report_json_file",
     "student_output_file",
 ]
 MISSING_REPORT_COLUMNS = [
@@ -53,6 +58,8 @@ MISSING_REPORT_COLUMNS = [
     "expected_report_path",
     "reason",
 ]
+FINAL_REPORT_CSV = "final_report.csv"
+FINAL_REPORT_PDF = "final_report.pdf"
 
 
 def safe_filename(value: str) -> str:
@@ -119,17 +126,94 @@ def read_student_outputs_index(path: Path) -> Dict[str, str]:
     return {row["pseudonym"]: row["student_output_file"] for row in rows if row.get("student_output_file")}
 
 
-def replace_pseudonyms(text: str, student: FinalizeStudent) -> str:
-    text = text.replace(student.pseudonym_filename_stem, student.safe_name)
-    return text.replace(student.pseudonym, student.full_name)
+REQUIRED_REPORT_KEYS = (
+    "assignment_submitted",
+    "all_tasks_implemented",
+    "looks_llm_generated",
+    "code_copy_indications",
+)
+ALLOWED_LLM_ASSESSMENTS = {"likely", "unlikely", "uncertain"}
 
 
-def write_named_report(source: Path, target: Path, student: FinalizeStudent) -> None:
+# The final overview is a quick glance rendered as a single table, so keep
+# notes short. The full notes remain in each student's named report.pdf /
+# report.json under the private output directory.
+MAX_FINAL_NOTE_CHARS = 240
+
+
+def _clip_notes(notes: str) -> str:
+    if len(notes) <= MAX_FINAL_NOTE_CHARS:
+        return notes
+    return notes[: MAX_FINAL_NOTE_CHARS - 3].rstrip() + "..."
+
+
+def write_named_report_json(source: Path, target: Path) -> None:
+    """Copy the machine-readable report verbatim (pseudonyms stay; the private maps resolve them)."""
     target.parent.mkdir(parents=True, exist_ok=True)
-    content = source.read_text(encoding="utf-8", errors="replace")
-    content = replace_pseudonyms(content, student)
-    header = "<!-- Generated locally by slaif-defense-grading finalize. Private instructor-facing output. -->\n\n"
-    target.write_text(header + content, encoding="utf-8", newline="\n")
+    shutil.copyfile(source, target)
+
+
+def _summary_cells(report_data: Dict[str, object], other_student_names: Dict[str, str]) -> Dict[str, str]:
+    """Reduce one validated report.json to the single-table final overview cells.
+
+    Notes are clipped to MAX_FINAL_NOTE_CHARS so the single-table overview
+    stays renderable; the untruncated notes stay in the named student report.
+    """
+    tasks = report_data.get("all_tasks_implemented")
+    tasks_cell = "Yes" if tasks is True else ("No" if tasks is False else "Unknown")
+
+    other_names: List[str] = []
+    copies = report_data.get("code_copy_indications")
+    if isinstance(copies, list):
+        for copy in copies:
+            if not isinstance(copy, dict):
+                continue
+            other_pseudonym = str(copy.get("other_student_pseudonym") or "").strip()
+            if not other_pseudonym:
+                continue
+            label = other_student_names.get(other_pseudonym) or other_pseudonym
+            if label not in other_names:
+                other_names.append(label)
+    copying_cell = f"Yes (with {', '.join(other_names)})" if other_names else "No"
+
+    llm_cell = {
+        "likely": "Likely",
+        "unlikely": "Unlikely",
+        "uncertain": "Uncertain",
+    }.get(str(report_data.get("looks_llm_generated") or "").casefold(), "Unknown")
+
+    return {
+        "all_tasks_implemented": tasks_cell,
+        "copying_indications": copying_cell,
+        "llm_indications": llm_cell,
+        "notes": _clip_notes(str(report_data.get("notes") or "").strip()),
+    }
+
+
+def load_assessment_report(path: Path) -> Tuple[Optional[Dict[str, object]], Optional[str]]:
+    """Load and validate an agent-generated report.json; returns (data, problem)."""
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        return None, f"report.json could not be read: {exc}"
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return None, f"report.json is not valid JSON: {exc}"
+    if not isinstance(data, dict):
+        return None, "report.json must contain a JSON object"
+    missing = [key for key in REQUIRED_REPORT_KEYS if key not in data]
+    if missing:
+        return None, f"report.json is missing required field(s): {', '.join(missing)}"
+    if not isinstance(data.get("assignment_submitted"), bool):
+        return None, "report.json field 'assignment_submitted' must be a boolean"
+    if data.get("all_tasks_implemented") not in (True, False, "unknown"):
+        return None, "report.json field 'all_tasks_implemented' must be true, false or 'unknown'"
+    if str(data.get("looks_llm_generated") or "").casefold() not in ALLOWED_LLM_ASSESSMENTS:
+        return None, "report.json field 'looks_llm_generated' must be 'likely', 'unlikely' or 'uncertain'"
+    if not isinstance(data.get("code_copy_indications"), list):
+        return None, "report.json field 'code_copy_indications' must be a list"
+    return data, None
 
 
 def write_named_student_output(source: Path, target: Path, student: FinalizeStudent) -> None:
@@ -150,6 +234,8 @@ def write_finalize_report(
     missing_report_rows: Sequence[Dict[str, str]],
     copied_student_outputs: int,
     missing_student_outputs: Sequence[FinalizeStudent],
+    pdf_warnings: Sequence[str] = (),
+    final_report_pdf: str = "",
 ) -> None:
     lines = [
         "# Finalize Report",
@@ -158,20 +244,32 @@ def write_finalize_report(
         f"- Found reports: {found_reports}",
         f"- Missing reports: {len(missing_report_rows)}",
         f"- Copied student-output text files: {copied_student_outputs}",
+        (
+            f"- Final report (single-table overview): `{final_report_pdf}` and `{FINAL_REPORT_CSV}`"
+            if final_report_pdf
+            else f"- Final report (single-table overview): PDF unavailable (see PDF Rendering Warnings); table written to `{FINAL_REPORT_CSV}`"
+        ),
         "- Instructor reports directory: `instructor_reports/`",
         "- Student outputs directory: `student_outputs/`",
         "",
         "## Privacy Notes",
         "",
         "- This final output is private/local and may contain real student identities.",
-        "- Instructor reports contain expected answers and should not be shown wholesale to students.",
+        "- Instructor reports are assessments for human review and should not be shown wholesale to students.",
         "- `student_outputs/` contains the pseudonymized concatenated text that the agent saw; show files individually only when appropriate.",
+        "- `final_report.pdf`/`final_report.csv` is the single-table overview with real names for the teaching assistant; keep it private.",
         "",
         "## Missing Reports",
         "",
     ]
     if missing_report_rows:
         lines.extend(f"- `{row['pseudonym']}` / {row['full_name']}: {row['reason']}" for row in missing_report_rows)
+    else:
+        lines.append("- None")
+
+    lines.extend(["", "## PDF Rendering Warnings", ""])
+    if pdf_warnings:
+        lines.extend(f"- `{warning}`" for warning in pdf_warnings)
     else:
         lines.append("- None")
 
@@ -212,30 +310,68 @@ def finalize_outputs(workspace: Path, private_output: Path, output: Path, strict
     final_rows: List[Dict[str, str]] = []
     missing_report_rows: List[Dict[str, str]] = []
     missing_student_outputs: List[FinalizeStudent] = []
+    overview_rows: List[Dict[str, str]] = []
     found_reports = 0
     copied_student_outputs = 0
 
+    other_student_names = {student.pseudonym: student.full_name for student in students}
+    pdf_warnings: List[str] = []
+
     for student in students:
-        expected_report = workspace / student.pseudonym / "report_aspects.md"
-        report_file = ""
+        expected_report = workspace / student.pseudonym / "report.json"
+        report_pdf_file = ""
+        report_json_file = ""
         report_status = "missing"
         if expected_report.exists():
-            report_target = instructor_reports_dir / safe_names[student.pseudonym] / "report_aspects.md"
-            write_named_report(expected_report, report_target, student)
-            report_file = report_target.relative_to(output).as_posix()
-            report_status = "found"
-            found_reports += 1
+            report_data, problem = load_assessment_report(expected_report)
+            if problem is None:
+                json_target = instructor_reports_dir / safe_names[student.pseudonym] / "report.json"
+                write_named_report_json(expected_report, json_target)
+                report_json_file = json_target.relative_to(output).as_posix()
+                try:
+                    pdf_target = instructor_reports_dir / safe_names[student.pseudonym] / "report.pdf"
+                    render_assessment_pdf(
+                        report_data, student.full_name, student.pseudonym, other_student_names, pdf_target
+                    )
+                    report_pdf_file = pdf_target.relative_to(output).as_posix()
+                except RuntimeError as exc:
+                    pdf_warnings.append(f"{student.pseudonym} / {student.full_name}: {exc}")
+                report_status = "found"
+                found_reports += 1
+            else:
+                missing_report_rows.append(
+                    {
+                        "pseudonym": student.pseudonym,
+                        "name": student.name,
+                        "surname": student.surname,
+                        "full_name": student.full_name,
+                        "expected_report_path": expected_report.relative_to(workspace).as_posix(),
+                        "reason": problem,
+                    }
+                )
         else:
-            missing_report_rows.append(
-                {
-                    "pseudonym": student.pseudonym,
-                    "name": student.name,
-                    "surname": student.surname,
-                    "full_name": student.full_name,
-                    "expected_report_path": expected_report.relative_to(workspace).as_posix(),
-                    "reason": "report_aspects.md was not found in the pseudonymized workspace",
-                }
-            )
+                missing_report_rows.append(
+                    {
+                        "pseudonym": student.pseudonym,
+                        "name": student.name,
+                        "surname": student.surname,
+                        "full_name": student.full_name,
+                        "expected_report_path": expected_report.relative_to(workspace).as_posix(),
+                        "reason": "report.json was not found in the pseudonymized workspace",
+                    }
+                )
+
+        if report_status == "found":
+            overview_row = {"full_name": student.full_name, **_summary_cells(report_data, other_student_names)}
+        else:
+            overview_row = {
+                "full_name": student.full_name,
+                "all_tasks_implemented": "Unknown",
+                "copying_indications": "Unknown",
+                "llm_indications": "Unknown",
+                "notes": "No report",
+            }
+        overview_rows.append(overview_row)
 
         student_output_file = ""
         source_output_name = student_output_files.get(student.pseudonym)
@@ -257,7 +393,8 @@ def finalize_outputs(workspace: Path, private_output: Path, output: Path, strict
             "surname": student.surname,
             "full_name": student.full_name,
             "report_status": report_status,
-            "report_file": report_file,
+            "report_pdf_file": report_pdf_file,
+            "report_json_file": report_json_file,
             "student_output_file": student_output_file,
         }
         for field in extra_fields:
@@ -274,6 +411,18 @@ def finalize_outputs(workspace: Path, private_output: Path, output: Path, strict
         writer.writeheader()
         writer.writerows(missing_report_rows)
 
+    with (output / FINAL_REPORT_CSV).open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(FINAL_REPORT_CSV_COLUMNS), lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(overview_rows)
+
+    final_report_pdf = ""
+    try:
+        render_final_report_pdf(overview_rows, output / FINAL_REPORT_PDF)
+        final_report_pdf = FINAL_REPORT_PDF
+    except RuntimeError as exc:
+        pdf_warnings.append(f"final report: {exc}")
+
     write_finalize_report(
         output=output,
         roster_count=len(students),
@@ -281,6 +430,8 @@ def finalize_outputs(workspace: Path, private_output: Path, output: Path, strict
         missing_report_rows=missing_report_rows,
         copied_student_outputs=copied_student_outputs,
         missing_student_outputs=missing_student_outputs,
+        pdf_warnings=pdf_warnings,
+        final_report_pdf=final_report_pdf,
     )
 
     if strict and missing_report_rows:
@@ -291,5 +442,6 @@ def finalize_outputs(workspace: Path, private_output: Path, output: Path, strict
         found_reports=found_reports,
         missing_reports=len(missing_report_rows),
         copied_student_outputs=copied_student_outputs,
+        final_report_pdf=final_report_pdf,
         output=output,
     )

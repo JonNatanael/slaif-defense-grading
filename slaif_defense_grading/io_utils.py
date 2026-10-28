@@ -18,6 +18,26 @@ def _commonpath(a: Path, b: Path) -> Path:
     return Path(os.path.commonpath([str(a), str(b)]))
 
 
+def detect_bom_encoding(prefix: bytes) -> str:
+    """Return the Python codec implied by a text file's byte order mark (BOM).
+
+    LMS/CSV exports are often saved as UTF-16 (e.g. from Windows or Excel) and carry a
+    BOM. Returns the matching codec for the UTF-8/UTF-16/UTF-32 BOMs and falls back to
+    ``utf-8`` when no BOM is present.
+    """
+    if prefix.startswith(b"\xff\xfe\x00\x00"):
+        return "utf-32-le"
+    if prefix.startswith(b"\x00\x00\xfe\xff"):
+        return "utf-32-be"
+    if prefix.startswith(b"\xff\xfe"):
+        return "utf-16-le"
+    if prefix.startswith(b"\xfe\xff"):
+        return "utf-16-be"
+    if prefix.startswith(b"\xef\xbb\xbf"):
+        return "utf-8-sig"
+    return "utf-8"
+
+
 def safe_extract_zip(zip_path: Path, dest_dir: Path) -> None:
     dest_dir = dest_dir.resolve()
     with zipfile.ZipFile(zip_path) as zf:

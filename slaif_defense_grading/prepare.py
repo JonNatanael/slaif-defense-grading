@@ -1,22 +1,24 @@
 from __future__ import annotations
 
 import csv
+import io
 import re
 import shutil
 import tempfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence
 
 from .core import (
+    explicit_folder_identifiers,
     infer_student_label_from_folder,
     iter_nested_zips,
     iter_submission_dirs,
     merge_master_inputs,
     stage_zip_with_sibling_files,
 )
-from .io_utils import decode_text_file, list_document_files, list_readable_files, unique_path
+from .io_utils import decode_text_file, detect_bom_encoding, eprint, list_document_files, list_readable_files, unique_path
 from .models import DOCUMENT_SUFFIXES, READABLE_SUFFIXES
 from .process_script import render_process_script
 
@@ -54,6 +56,7 @@ class PrepareResult:
     matched_count: int
     missing_count: int
     unmatched_folders: List[str]
+    skipped_nested_zips: List[str]
     copied_documents: List[Path]
     excluded_documents: List[str]
     manifest_entries: List["ManifestEntry"]
@@ -121,37 +124,82 @@ def workspace_task_filename(task_file: Path) -> str:
     return f"task{suffix}" if suffix else "task"
 
 
+def roster_identifier_indexes(students: Sequence[RosterStudent]) -> tuple[Dict[str, RosterStudent], Dict[str, RosterStudent]]:
+    """Index roster rows by unique email and student_id for conservative folder matching."""
+    by_email: Dict[str, List[RosterStudent]] = {}
+    by_id: Dict[str, List[RosterStudent]] = {}
+    for student in students:
+        email = (student.row.get("email") or "").strip().casefold()
+        if email:
+            by_email.setdefault(email, []).append(student)
+        student_id = (student.row.get("student_id") or "").strip()
+        if student_id:
+            by_id.setdefault(student_id, []).append(student)
+    return (
+        {key: rows[0] for key, rows in by_email.items() if len(rows) == 1},
+        {key: rows[0] for key, rows in by_id.items() if len(rows) == 1},
+    )
+
+
+def match_by_explicit_identifiers(
+    folder_name: str,
+    email_index: Dict[str, RosterStudent],
+    id_index: Dict[str, RosterStudent],
+) -> RosterStudent | None:
+    """Match a folder whose name embeds explicit `=email` / `=student_id` tokens.
+
+    Only exact identifiers that are unique in the roster are used, and only when the
+    email and id evidence agree (or one of them is absent).
+    """
+    email_candidates, id_candidates = explicit_folder_identifiers(folder_name)
+    by_email = email_index.get(email_candidates[0]) if email_candidates else None
+    by_id = id_index.get(id_candidates[0]) if id_candidates else None
+    if by_email is None or by_id is None:
+        return by_email if by_email is not None else by_id
+    return by_email if by_email is by_id else None
+
+
 def read_roster(students_csv: Path) -> List[RosterStudent]:
-    with students_csv.open("r", encoding="utf-8-sig", newline="") as f:
-        reader = csv.DictReader(f)
-        if reader.fieldnames is None:
-            raise ValueError("students CSV is missing a header row")
+    raw = students_csv.read_bytes()
+    encoding = detect_bom_encoding(raw[:4])
+    try:
+        text = raw.decode(encoding)
+    except UnicodeError as exc:
+        raise ValueError(
+            "students CSV could not be decoded as text; re-export the roster as UTF-8 "
+            "(e.g. `iconv -f UTF-16LE -t UTF-8 izvoz.csv > roster.csv`). Details: "
+            f"{exc}"
+        ) from exc
 
-        fieldnames = [field.strip() for field in reader.fieldnames]
-        missing = [field for field in ("name", "surname") if field not in fieldnames]
-        if missing:
-            raise ValueError(f"students CSV is missing required column(s): {', '.join(missing)}")
+    reader = csv.DictReader(io.StringIO(text.lstrip("\ufeff"), newline=""))
+    if reader.fieldnames is None:
+        raise ValueError("students CSV is missing a header row")
 
-        students: List[RosterStudent] = []
-        for idx, raw_row in enumerate(reader, start=1):
-            row = {field: (raw_row.get(field) or "").strip() for field in fieldnames}
-            name = row["name"]
-            surname = row["surname"]
-            if not name or not surname:
-                raise ValueError(f"students CSV row {idx} must have non-empty name and surname")
+    fieldnames = [field.strip() for field in reader.fieldnames]
+    missing = [field for field in ("name", "surname") if field not in fieldnames]
+    if missing:
+        raise ValueError(f"students CSV is missing required column(s): {', '.join(missing)}")
 
-            full_name = row.get("full_name") or f"{name} {surname}"
-            students.append(
-                RosterStudent(
-                    row_number=idx,
-                    row=row,
-                    fieldnames=fieldnames,
-                    name=name,
-                    surname=surname,
-                    full_name=full_name.strip(),
-                    pseudonym_index=idx,
-                )
+    students: List[RosterStudent] = []
+    for idx, raw_row in enumerate(reader, start=1):
+        row = {field: (raw_row.get(field) or "").strip() for field in fieldnames}
+        name = row["name"]
+        surname = row["surname"]
+        if not name or not surname:
+            raise ValueError(f"students CSV row {idx} must have non-empty name and surname")
+
+        full_name = row.get("full_name") or f"{name} {surname}"
+        students.append(
+            RosterStudent(
+                row_number=idx,
+                row=row,
+                fieldnames=fieldnames,
+                name=name,
+                surname=surname,
+                full_name=full_name.strip(),
+                pseudonym_index=idx,
             )
+        )
 
     seen: Dict[str, RosterStudent] = {}
     duplicates: List[str] = []
@@ -380,7 +428,12 @@ def copy_private_student_outputs(
     return output_dir, index_path
 
 
-def discover_submission_dirs(student_folder_path: Path, outer_extract: Path, unzipped_root: Path) -> List[Path]:
+def discover_submission_dirs(
+    student_folder_path: Path,
+    outer_extract: Path,
+    unzipped_root: Path,
+    skipped_nested_zips: List[str],
+) -> List[Path]:
     extracted_dirs: List[Path] = []
     student_zips = sorted(iter_nested_zips(student_folder_path), key=lambda p: p.as_posix().casefold())
 
@@ -388,8 +441,12 @@ def discover_submission_dirs(student_folder_path: Path, outer_extract: Path, unz
         for zpath in student_zips:
             try:
                 extracted_dirs.append(stage_zip_with_sibling_files(zpath, outer_extract, unzipped_root))
-            except zipfile.BadZipFile:
-                continue
+            except RuntimeError:
+                eprint(f"Warning: skipping encrypted nested ZIP {zpath.name} (password required for extraction)")
+                skipped_nested_zips.append(zpath.relative_to(outer_extract).as_posix())
+            except zipfile.error:
+                eprint(f"Warning: skipping unreadable nested ZIP {zpath.name}")
+                skipped_nested_zips.append(zpath.relative_to(outer_extract).as_posix())
         return extracted_dirs
 
     return iter_submission_dirs(student_folder_path)
@@ -413,6 +470,13 @@ def write_preprocessing_report(
 
     if result.unmatched_folders:
         lines.extend(f"- `{folder}`" for folder in sorted(result.unmatched_folders, key=str.casefold))
+    else:
+        lines.append("- None")
+
+    lines.extend(["", "## Skipped Nested ZIPs", ""])
+    if result.skipped_nested_zips:
+        lines.append("- Encrypted or unreadable nested ZIPs were skipped; their contents are not part of the workspace.")
+        lines.extend(f"- `{path}`" for path in sorted(result.skipped_nested_zips, key=str.casefold))
     else:
         lines.append("- None")
 
@@ -535,9 +599,12 @@ def prepare_workspace(
     workspace_agents_template: Path,
     report_template: Path,
     include_opaque_documents: bool = False,
+    codex_profile: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
 ) -> PrepareResult:
     students = read_roster(students_csv)
     roster_by_identity = {normalize_identity(f"{student.name} {student.surname}"): student for student in students}
+    roster_by_email, roster_by_id = roster_identifier_indexes(students)
 
     workspace_resolved = workspace.resolve()
     private_output_resolved = private_output.resolve()
@@ -564,11 +631,12 @@ def prepare_workspace(
     write_workspace_students_csv(students, workspace)
     write_private_pseudonym_map(students, private_output)
     shutil.copy2(workspace_agents_template, workspace / "AGENTS.md")
-    shutil.copy2(report_template, workspace / "report_aspects_template.md")
+    shutil.copy2(report_template, workspace / report_template.name)
     shutil.copy2(task_file, task_workspace_path)
 
     matched_students: Dict[int, RosterStudent] = {}
     unmatched_folders: List[str] = []
+    skipped_nested_zips: List[str] = []
     copied_documents: List[Path] = []
     excluded_documents: List[str] = []
     manifest_entries: List[ManifestEntry] = []
@@ -589,10 +657,16 @@ def prepare_workspace(
             folder_label = infer_student_label_from_folder(student_folder_path.name)
             student = roster_by_identity.get(normalize_identity(folder_label))
             if student is None:
+                student = match_by_explicit_identifiers(
+                    student_folder_path.name, roster_by_email, roster_by_id
+                )
+            if student is None:
                 unmatched_folders.append(student_folder_path.name)
                 continue
 
-            extracted_dirs = discover_submission_dirs(student_folder_path, outer_extract, unzipped_root)
+            extracted_dirs = discover_submission_dirs(
+                student_folder_path, outer_extract, unzipped_root, skipped_nested_zips
+            )
             matched_students[student.row_number] = student
             text_output = write_pseudonymized_text_output(student, extracted_dirs, workspace, students)
             text_outputs_by_row[student.row_number] = text_output.name
@@ -619,7 +693,13 @@ def prepare_workspace(
             )
 
     associations = write_associations_csv(students, workspace, text_outputs_by_row, document_outputs_by_row)
-    render_process_script(template_path, workspace / "process.sh", [association.student.pseudonym for association in associations])
+    render_process_script(
+        template_path,
+        workspace / "process.sh",
+        [association.student.pseudonym for association in associations],
+        codex_profile=codex_profile,
+        reasoning_effort=reasoning_effort,
+    )
     student_outputs_dir, student_outputs_index = copy_private_student_outputs(
         students,
         workspace,
@@ -632,6 +712,7 @@ def prepare_workspace(
         matched_count=len(matched_students),
         missing_count=len(students) - len(matched_students),
         unmatched_folders=unmatched_folders,
+        skipped_nested_zips=skipped_nested_zips,
         copied_documents=copied_documents,
         excluded_documents=excluded_documents,
         manifest_entries=manifest_entries,

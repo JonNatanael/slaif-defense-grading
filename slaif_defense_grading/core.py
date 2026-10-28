@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence
@@ -10,6 +11,29 @@ from .io_utils import copy_file_preserving_uniqueness, eprint, safe_extract_zip
 
 def infer_student_label_from_folder(folder_name: str) -> str:
     return folder_name.split("_", 1)[0].strip() or folder_name.strip() or "UNKNOWN"
+
+
+def explicit_folder_identifiers(folder_name: str) -> tuple[List[str], List[str]]:
+    """Extract explicit `=value` identifier tokens from an LMS folder name.
+
+    Some LMS exports name student folders like ``Name Surname=email=student_id_...``
+    instead of the Moodle ``Name Surname_id_...`` style. Returns ``(email_candidates,
+    id_candidates)`` where email candidates are `=value` tokens containing ``@`` and
+    id candidates are the leading digit runs of the other `=value` tokens.
+    """
+    email_candidates: List[str] = []
+    id_candidates: List[str] = []
+    for token in folder_name.split("=")[1:]:
+        token = token.strip()
+        if not token:
+            continue
+        if "@" in token:
+            email_candidates.append(token.casefold())
+        else:
+            match = re.match(r"^\d+", token)
+            if match:
+                id_candidates.append(match.group(0))
+    return email_candidates, id_candidates
 
 
 def merge_master_inputs(input_zips: Sequence[Path], merged_root: Path) -> None:
@@ -23,7 +47,18 @@ def merge_master_inputs(input_zips: Sequence[Path], merged_root: Path) -> None:
         eprint(f"[slaif-defense-grading] Extracting master ZIP #{idx} -> {source_root}")
         safe_extract_zip(input_zip, source_root)
 
-        for student_path in sorted((p for p in source_root.iterdir() if p.is_dir()), key=lambda p: p.as_posix().casefold()):
+        student_paths = [p for p in source_root.iterdir() if p.is_dir()]
+        if len(student_paths) == 1:
+            container = student_paths[0]
+            subdirs = [p for p in container.iterdir() if p.is_dir()]
+            if len(subdirs) >= 2:
+                eprint(
+                    f"[slaif-defense-grading] Master ZIP #{idx} contains a single top-level folder "
+                    f"'{container.name}' with {len(subdirs)} subfolders; unwrapping it and treating the subfolders as student folders"
+                )
+                student_paths = subdirs
+
+        for student_path in sorted(student_paths, key=lambda p: p.as_posix().casefold()):
             label = infer_student_label_from_folder(student_path.name).casefold()
 
             existing = students_by_label.get(label)

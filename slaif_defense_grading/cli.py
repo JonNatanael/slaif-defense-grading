@@ -59,7 +59,31 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+# DEFAULT_CODEX_PROFILE = "qwen-neumann"
+DEFAULT_CODEX_PROFILE = "early-beta"
+DEFAULT_CODEX_REASONING_EFFORT = "medium"
+
+
 def add_prepare_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--codex-profile",
+        default=DEFAULT_CODEX_PROFILE,
+        help=(
+            "Codex profile (a $CODEX_HOME/<profile>.config.toml file) rendered into process.sh as "
+            f"'-p <profile>'. Default: {DEFAULT_CODEX_PROFILE} (local Qwen on Neumann). "
+            "Use 'none' to omit the flag and let Codex pick its own default model."
+        ),
+    )
+    parser.add_argument(
+        "--codex-reasoning-effort",
+        default=DEFAULT_CODEX_REASONING_EFFORT,
+        help=(
+            "Reasoning effort rendered into process.sh as '-c model_reasoning_effort=<effort>'. "
+            "The qwen-neumann model supports low/medium/xhigh; higher values are slower per student. "
+            f"Default: {DEFAULT_CODEX_REASONING_EFFORT}. Use 'none' to omit the flag and fall back to "
+            "the profile/CLI default."
+        ),
+    )
     parser.add_argument(
         "--input-file",
         "-i",
@@ -132,7 +156,13 @@ def run_prepare(args: argparse.Namespace) -> int:
     private_output = Path(args.private_output).expanduser().resolve()
     template_path = REPO_ROOT / "templates" / "process.sh.tpl"
     workspace_agents_template = REPO_ROOT / "templates" / "workspace" / "AGENTS.md"
-    report_template = REPO_ROOT / "templates" / "workspace" / "report_aspects_template.md"
+    report_template = REPO_ROOT / "templates" / "workspace" / "report_template.json"
+    codex_profile = args.codex_profile.strip()
+    if codex_profile.casefold() in {"", "none"}:
+        codex_profile = None
+    reasoning_effort = args.codex_reasoning_effort.strip()
+    if reasoning_effort.casefold() in {"", "none"}:
+        reasoning_effort = None
 
     try:
         result = prepare_workspace(
@@ -145,6 +175,8 @@ def run_prepare(args: argparse.Namespace) -> int:
             workspace_agents_template=workspace_agents_template,
             report_template=report_template,
             include_opaque_documents=args.include_opaque_documents,
+            codex_profile=codex_profile,
+            reasoning_effort=reasoning_effort,
         )
     except Exception as exc:  # noqa: BLE001
         eprint(f"ERROR: prepare failed: {exc}")
@@ -179,6 +211,8 @@ def run_finalize(args: argparse.Namespace) -> int:
         f"({result.found_reports}/{result.roster_count} reports found, "
         f"{result.copied_student_outputs} student outputs copied): {output}"
     )
+    if result.final_report_pdf:
+        eprint(f"[slaif-defense-grading] Final report (single-table overview): {output / result.final_report_pdf}")
     return 0
 
 
