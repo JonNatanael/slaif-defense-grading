@@ -1,0 +1,27 @@
+{
+  "pseudonym": "Student 0001",
+  "assignment_submitted": true,
+  "all_tasks_implemented": false,
+  "task_details": [
+    {
+      "task": "<what the task requires, described by what it must do, not by function names>",
+      "implemented": true,
+      "evidence": "<file and line reference in the associated submission files>"
+    }
+  ],
+  "looks_llm_generated": "uncertain",
+  "llm_generation_indicators": [
+    "<concrete indicator with file and line reference>"
+  ],
+  "code_copy_indications": [
+    {
+      "other_student_pseudonym": "Student 0007",
+      "this_file": "<file in this student's submission>",
+      "this_lines": "<1-based line range, e.g. 12-34>",
+      "other_file": "<file in the other student's submission>",
+      "other_lines": "<1-based line range in the other file>",
+      "evidence": "<what is shared and why it is obviously copied: non-generic, non-trivial code>"
+    }
+  ],
+  "notes": "<optional short instructor-facing paragraph: a few connected sentences, not a list of fragments>"
+}

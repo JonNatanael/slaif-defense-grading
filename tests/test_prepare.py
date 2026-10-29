@@ -892,7 +892,11 @@ def test_prepare_creates_pseudonymized_workspace_and_private_outputs(tmp_path: P
     assert "already done locally" in agents_text
     assert "Do not redo preprocessing" in agents_text
     assert "reasonably strong" in agents_text
-    assert "Similar standard function calls" in agents_text
+    assert "most obviously copied" in agents_text
+    assert "import statements" in agents_text
+    assert "standard display and plotting code" in agents_text
+    assert "similar standard library or framework API calls" in agents_text
+    assert "written as a paragraph" in agents_text
     assert "single-table final overview PDF (`final_report.pdf`)" in agents_text
     assert "The only student submission files are the files listed in `associations.csv`." in agents_text
     assert "Do not accuse AI use" in agents_text

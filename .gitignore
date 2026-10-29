@@ -210,7 +210,7 @@ __marimo__/
 data/
 .codex
 work/
-workspace/
+/workspace/
 private/
 outputs/
 *.zip
