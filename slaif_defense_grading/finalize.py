@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .pdf_report import FINAL_REPORT_CSV_COLUMNS, render_assessment_pdf, render_final_report_pdf
+from .html_report import FINAL_REPORT_HTML, render_final_report_html
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,7 @@ class FinalizeResult:
     missing_reports: int
     copied_student_outputs: int
     final_report_pdf: str
+    final_report_html: str
     output: Path
 
 
@@ -235,7 +237,9 @@ def write_finalize_report(
     copied_student_outputs: int,
     missing_student_outputs: Sequence[FinalizeStudent],
     pdf_warnings: Sequence[str] = (),
+    html_warnings: Sequence[str] = (),
     final_report_pdf: str = "",
+    final_report_html: str = "",
 ) -> None:
     lines = [
         "# Finalize Report",
@@ -248,6 +252,11 @@ def write_finalize_report(
             f"- Final report (single-table overview): `{final_report_pdf}` and `{FINAL_REPORT_CSV}`"
             if final_report_pdf
             else f"- Final report (single-table overview): PDF unavailable (see PDF Rendering Warnings); table written to `{FINAL_REPORT_CSV}`"
+        ),
+        (
+            f"- Final report (local HTML viewer): `{final_report_html}`"
+            if final_report_html
+            else "- Final report (local HTML viewer): HTML unavailable (see HTML Rendering Warnings)"
         ),
         "- Instructor reports directory: `instructor_reports/`",
         "- Student outputs directory: `student_outputs/`",
@@ -270,6 +279,12 @@ def write_finalize_report(
     lines.extend(["", "## PDF Rendering Warnings", ""])
     if pdf_warnings:
         lines.extend(f"- `{warning}`" for warning in pdf_warnings)
+    else:
+        lines.append("- None")
+
+    lines.extend(["", "## HTML Rendering Warnings", ""])
+    if html_warnings:
+        lines.extend(f"- `{warning}`" for warning in html_warnings)
     else:
         lines.append("- None")
 
@@ -423,6 +438,17 @@ def finalize_outputs(workspace: Path, private_output: Path, output: Path, strict
     except RuntimeError as exc:
         pdf_warnings.append(f"final report: {exc}")
 
+    # Post festum: derive the local HTML viewer solely from the final outputs
+    # (final index, overview CSV, missing-reports CSV, named reports, named
+    # student outputs) that were just written under `output`.
+    final_report_html = ""
+    html_warnings: List[str] = []
+    try:
+        render_final_report_html(output)
+        final_report_html = FINAL_REPORT_HTML
+    except Exception as exc:  # noqa: BLE001 - keep finalize robust like the PDF path
+        html_warnings = [f"final report: {exc}"]
+
     write_finalize_report(
         output=output,
         roster_count=len(students),
@@ -431,7 +457,9 @@ def finalize_outputs(workspace: Path, private_output: Path, output: Path, strict
         copied_student_outputs=copied_student_outputs,
         missing_student_outputs=missing_student_outputs,
         pdf_warnings=pdf_warnings,
+        html_warnings=html_warnings,
         final_report_pdf=final_report_pdf,
+        final_report_html=final_report_html,
     )
 
     if strict and missing_report_rows:
@@ -443,5 +471,6 @@ def finalize_outputs(workspace: Path, private_output: Path, output: Path, strict
         missing_reports=len(missing_report_rows),
         copied_student_outputs=copied_student_outputs,
         final_report_pdf=final_report_pdf,
+        final_report_html=final_report_html,
         output=output,
     )

@@ -213,6 +213,8 @@ def run_finalize(args: argparse.Namespace) -> int:
     )
     if result.final_report_pdf:
         eprint(f"[slaif-defense-grading] Final report (single-table overview): {output / result.final_report_pdf}")
+    if result.final_report_html:
+        eprint(f"[slaif-defense-grading] Final report (local HTML viewer): {output / result.final_report_html}")
     return 0
 
 

@@ -97,6 +97,7 @@ work/final/
   final_index.csv
   final_report.csv
   final_report.pdf
+  final_report.html
   finalize_report.md
   missing_reports.csv
   instructor_reports/
@@ -111,13 +112,15 @@ work/final/
 
 `final_report.pdf` (and the machine-readable `final_report.csv`) is a single-table overview with one row per student: all tasks implemented, reasonably strong indications of copying, reasonably strong indications of LLM use, and notes. Use it as a fast reference when evaluating submissions in person with the student.
 
+`final_report.html` is the same overview as a self-contained local HTML viewer (just open the file in a browser). It adds links to each student's full report and jumps directly to the exact code lines referenced in the reports (own code, the other student's code for suspected copying, or lines mentioned in notes), highlighting the target lines according to the kind of link used.
+
 ## What To Share With Students
 
 `student_outputs/<Name>.txt` is the concatenated pseudonymized submission text that the agent saw. It can be shown individually to the corresponding student if appropriate.
 
 `instructor_reports/<Name>/report.pdf` (human-readable) and `report.json` (machine-readable) are instructor-facing assessments for human review, including line-number evidence. Do not send them wholesale to students.
 
-Do not share `pseudonym_map.csv`, `student_outputs_index.csv`, `final_index.csv`, or the final report (`final_report.pdf`/`final_report.csv`) wholesale with students.
+Do not share `pseudonym_map.csv`, `student_outputs_index.csv`, `final_index.csv`, or the final report (`final_report.pdf`/`final_report.csv`/`final_report.html`) wholesale with students.
 
 ## Troubleshooting
 

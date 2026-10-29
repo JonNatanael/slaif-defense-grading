@@ -168,6 +168,7 @@ final/
   final_index.csv
   final_report.csv
   final_report.pdf
+  final_report.html
   finalize_report.md
   missing_reports.csv
   instructor_reports/
@@ -182,13 +183,15 @@ final/
 
 `finalize` also renders the final report: a single-table overview (`final_report.pdf`, machine-readable `final_report.csv`) with one row per roster student showing whether all tasks are implemented, whether there are reasonably strong indications of copying (with the cross-referenced student resolved to their real name; similar standard function calls are not indications), whether there are reasonably strong indications of LLM use, and short notes. It is a fast reference for the teaching assistant when evaluating submissions in person with the student. Students without a valid agent report show `Unknown` and the note `No report`.
 
+The same overview is also written as `final_report.html`: a self-contained local HTML viewer (open it in any browser, no server or network needed) built post festum solely from the final outputs. Besides the overview table it links to each student's full report (`report.pdf`/`report.json`) and to the exact lines of the source code referenced in the reports: own-submission lines, the other student's lines for suspected copying, and lines mentioned in notes, task evidence, or LLM indicators. The highlighted lines are colored by which kind of link you opened them (own-submission copy link, other-student copy link, or note/reference link).
+
 ## What Can Be Shown To Students
 
 `final/student_outputs/<Name>.txt` is the pseudonymized concatenated submission text that the agent saw. It may be shown individually to the corresponding student when useful for review.
 
 `final/instructor_reports/<Name>/report.pdf` and `report.json` are instructor-facing. They contain assessments, indicators, and line-number evidence for human review, and should not be sent wholesale to students.
 
-Do not share `pseudonym_map.csv`, `student_outputs_index.csv`, `final_index.csv`, or the final report (`final_report.pdf`/`final_report.csv`) wholesale with students.
+Do not share `pseudonym_map.csv`, `student_outputs_index.csv`, `final_index.csv`, or the final report (`final_report.pdf`/`final_report.csv`/`final_report.html`) wholesale with students.
 
 ## AGENTS.md Roles
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 import stat
 import subprocess
 import sys
@@ -639,6 +640,124 @@ def test_finalize_long_notes_stay_on_one_page_in_final_report(tmp_path: Path) ->
     # The untruncated notes stay in the named student report.
     named_report = json.loads((output / "instructor_reports" / "Ana_Novak" / "report.json").read_text(encoding="utf-8"))
     assert named_report["notes"] == long_notes
+
+
+def test_html_report_loads_code_files_from_concatenated_output(tmp_path: Path) -> None:
+    from slaif_defense_grading.html_report import load_code_files
+
+    txt = tmp_path / "Student_0001.txt"
+    txt.write_text(
+        "header line that must be ignored\n"
+        "==== BEGIN Student 0001 | submission | main.py ====\n"
+        "line one\n"
+        "line two\n"
+        "==== END Student 0001 | submission | main.py ====\n"
+        "==== BEGIN Student 0001 | submission | src/deep/file.py ====\n"
+        "only line\n"
+        "==== END Student 0001 | submission | src/deep/file.py ====\n"
+        "trailing junk\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    files = load_code_files(txt)
+    assert files == [
+        {"file": "main.py", "lines": ["line one", "line two"]},
+        {"file": "src/deep/file.py", "lines": ["only line"]},
+    ]
+
+
+def test_finalize_renders_html_viewer(tmp_path: Path) -> None:
+    workspace, private_output, prepare_result = run_prepare(tmp_path)
+    assert prepare_result.returncode == 0, prepare_result.stderr
+
+    report = {
+        "pseudonym": "Student 0001",
+        "assignment_submitted": True,
+        "all_tasks_implemented": True,
+        "task_details": [
+            {"task": "print the greeting", "implemented": True, "evidence": "main.py lines 1-2"},
+        ],
+        "looks_llm_generated": "likely",
+        "llm_generation_indicators": ["uniform style in main.py lines 1-2"],
+        "code_copy_indications": [
+            {
+                "other_student_pseudonym": "Student 0002",
+                "this_file": "main.py",
+                "this_lines": "1-2",
+                "other_file": "sol.py",
+                "other_lines": "1-1",
+                "evidence": "identical print statement (main.py line 1 vs sol.py line 1)",
+            }
+        ],
+        "notes": "Naming style visible in main.py lines 1-2.",
+    }
+    (workspace / "Student 0001").mkdir()
+    (workspace / "Student 0001" / "report.json").write_text(
+        json.dumps(report, indent=2) + "\n", encoding="utf-8", newline="\n"
+    )
+
+    output = tmp_path / "final"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "slaif-defense-grading.py",
+            "finalize",
+            "--workspace",
+            str(workspace),
+            "--private-output",
+            str(private_output),
+            "--output",
+            str(output),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+    html_path = output / "final_report.html"
+    assert html_path.exists()
+    html = html_path.read_text(encoding="utf-8")
+    assert html.startswith("<!DOCTYPE html>")
+    for needle in (
+        "Ana Novak",
+        "Student 0001",
+        "Boris Kovac",
+        "final_report.pdf",
+        "final_report.csv",
+        "instructor_reports/Ana_Novak/report.pdf",
+        "instructor_reports/Ana_Novak/report.json",
+        "student_outputs/Ana_Novak.txt",
+        "No report",
+    ):
+        assert needle in html, needle
+
+    match = re.search(r'<script id="data" type="application/json">(.*?)</script>', html, re.S)
+    assert match is not None
+    data = json.loads(match.group(1).replace("<\\/", "</"))
+    students = data["students"]
+    ana = next(s for s in students if s["pseudonym"] == "Student 0001")
+    boris = next(s for s in students if s["pseudonym"] == "Student 0002")
+    assert ana["status"] == "found"
+    assert ana["report"]["notes"] == "Naming style visible in main.py lines 1-2."
+    ana_code = {f["file"]: f["lines"] for f in ana["code"]}
+    # The named output carries the pseudonymized text the agent saw: roster
+    # identifiers are scrubbed to the pseudonym before concatenation.
+    assert ana_code["main.py"] == ['print("Student 0001")', 'print("Student 0001")', 'print("Student 0001")']
+    assert "notes.md" in ana_code
+    assert ana["overview"]["copying_indications"] == "Yes (with Boris Kovac)"
+    assert boris["status"] == "missing"
+    assert boris["report"] is None
+    assert boris["code"] == []
+    assert boris["overview"]["notes"] == "No report"
+
+    finalize_report = (output / "finalize_report.md").read_text(encoding="utf-8")
+    assert "- Final report (local HTML viewer): `final_report.html`" in finalize_report
+    assert "## HTML Rendering Warnings" in finalize_report
+
+    # The viewer is derived from the final outputs only; the workspace stays clean.
+    assert not list(workspace.rglob("*.html"))
 
 
 def test_finalize_uses_deterministic_safe_paths_for_duplicate_names(tmp_path: Path) -> None:
