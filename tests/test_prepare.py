@@ -3,12 +3,15 @@ from __future__ import annotations
 import csv
 import json
 import re
+import shutil
 import stat
 import subprocess
 import sys
 import zipfile
 from pathlib import Path
 from typing import Sequence
+
+import pytest
 
 from slaif_defense_grading.cli import DEFAULT_CODEX_PROFILE
 
@@ -730,6 +733,11 @@ def test_finalize_renders_html_viewer(tmp_path: Path) -> None:
         "instructor_reports/Ana_Novak/report.json",
         "student_outputs/Ana_Novak.txt",
         "No report",
+        'id="codetip"',
+        "data-owner",
+        "refChips",
+        "codeTip",
+        ".codelink.note",
     ):
         assert needle in html, needle
 
@@ -758,6 +766,21 @@ def test_finalize_renders_html_viewer(tmp_path: Path) -> None:
 
     # The viewer is derived from the final outputs only; the workspace stays clean.
     assert not list(workspace.rglob("*.html"))
+
+
+def test_html_viewer_embedded_script_is_valid_javascript(tmp_path: Path) -> None:
+    """The embedded viewer script must stay valid JavaScript (checked via node when available)."""
+    from slaif_defense_grading.html_report import _TEMPLATE
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not available; skipping the embedded JS syntax check")
+    match = re.search(r"<script>\n(.*?)\n</script>", _TEMPLATE, re.S)
+    assert match is not None
+    script_path = tmp_path / "viewer.js"
+    script_path.write_text(match.group(1), encoding="utf-8")
+    proc = subprocess.run([node, "--check", str(script_path)], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
 
 
 def test_finalize_uses_deterministic_safe_paths_for_duplicate_names(tmp_path: Path) -> None:

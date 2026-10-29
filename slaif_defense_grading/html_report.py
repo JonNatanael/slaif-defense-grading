@@ -176,6 +176,7 @@ table.overview tr:hover td { background: #f2f6ff; }
   "Cascadia Code", Consolas, monospace; }
 .codelink.own { border-color: #e0c341; background: #fffbe8; }
 .codelink.other { border-color: #d98c8c; background: #fff0f0; }
+.codelink.note { border-color: #7fa8e0; background: #eef4ff; }
 .codelink.dead { opacity: .5; cursor: not-allowed; border-style: dashed; }
 .legend { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
 .legend span { display: inline-block; width: 11px; height: 11px; border-radius: 3px;
@@ -202,6 +203,16 @@ pre.code .row.hl-note .ln { background: #b9d2f7; color: #10233f; }
 .muted { color: var(--muted); }
 .footer { margin-top: 26px; font-size: 12.5px; color: var(--muted); }
 ul.plain { margin: 4px 0; padding-left: 20px; }
+.codetip { position: fixed; z-index: 60; max-width: 560px; pointer-events: none;
+  background: #0f1520; color: #dce3ee; border: 1px solid #2a3547; border-radius: 8px;
+  padding: 8px 10px; box-shadow: 0 8px 28px rgba(0,0,0,.35);
+  font: 12px/1.5 ui-monospace, "Cascadia Code", Consolas, monospace; }
+.codetip .tipfile { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-weight: 700; color: #8fa0b8; margin-bottom: 5px; }
+.codetip .trow { display: flex; white-space: pre; }
+.codetip .tln { flex: 0 0 34px; text-align: right; padding-right: 9px; color: #5d6a80;
+  user-select: none; border-right: 1px solid #232c3d; margin-right: 9px; }
+.codetip .tmore { color: #8fa0b8; }
 </style>
 </head>
 <body>
@@ -211,6 +222,7 @@ ul.plain { margin: 4px 0; padding-left: 20px; }
   Open <a href="final_report.pdf">final_report.pdf</a> or <a href="final_report.csv">final_report.csv</a> for the print versions.</div>
 </header>
 <main id="app"></main>
+<div id="codetip" class="codetip" hidden></div>
 <script id="data" type="application/json">__DATA__</script>
 <script>
 "use strict";
@@ -282,13 +294,65 @@ function annotate(text, self, other, type) {
     if (idx >= 0) {
       const file = owner.code[idx].file;
       const kind = owner === self ? type : "other";
-      out += '<a class="ref" href="' + codeHref(owner.id, file, range, kind) + '">' + esc(m[0]) + "</a>";
+      out += '<a class="ref" href="' + codeHref(owner.id, file, range, kind) +
+        '" data-owner="' + esc(owner.id) + '" data-file="' + esc(file) + '" data-range="' + range + '">' + esc(m[0]) + "</a>";
     } else {
       out += esc(m[0]);
     }
     if (m.index === REF_RE.lastIndex) REF_RE.lastIndex++;
   }
   return out + esc(text.slice(last));
+}
+// Build hover-preview content: the actual code lines of (owner, file, range).
+function codeTip(owner, fileIdx, range) {
+  const f = owner.code[fileIdx];
+  const lines = (f && f.lines) || [];
+  if (!lines.length) return "";
+  const maxLines = 14;
+  const lo = range ? Math.max(1, Math.min(range[0], lines.length)) : 1;
+  const hi = range ? Math.min(range[1], lines.length) : Math.min(lo + maxLines - 1, lines.length);
+  if (hi < lo) return "";
+  let rows = "";
+  for (let n = lo; n <= hi; n++) {
+    rows += '<div class="trow"><span class="tln">' + n + '</span><span class="tlc">' +
+      esc(lines[n - 1]) + "</span></div>";
+  }
+  let more = "";
+  if (range && hi < range[1]) more = '<div class="tmore">\u2026 ' + (range[1] - hi) + " more lines</div>";
+  else if (!range && hi < lines.length) more = '<div class="tmore">\u2026</div>';
+  return '<div class="tipfile">' + esc(f.file) +
+    (range ? " \u00b7 lines " + lo + "-" + hi + (hi < range[1] ? " \u2026" : "") : "") + "</div>" + rows + more;
+}
+// Turn file/line references in free text into codelink chips (same look as the
+// copy cards); each chip carries the data needed for the hover code preview.
+function refChips(student, text, cls, type) {
+  text = String(text == null ? "" : text);
+  let chips = "";
+  const seen = {};
+  REF_RE.lastIndex = 0;
+  let m;
+  while ((m = REF_RE.exec(text)) !== null) {
+    const prev = m.index > 0 ? text[m.index - 1] : " ";
+    if (!/[A-Za-z0-9]/.test(prev)) {
+      const fileToken = m[1] || "";
+      const a = +m[2];
+      const b = m[3] ? +m[3] : a;
+      const range = Math.min(a, b) + "-" + Math.max(a, b);
+      let idx = fileIndex(student, fileToken);
+      if (idx < 0 && !fileToken && (student.code || []).length === 1) idx = 0;
+      if (idx >= 0) {
+        const file = student.code[idx].file;
+        if (!seen[file + ":" + range]) {
+          seen[file + ":" + range] = true;
+          chips += '<a class="codelink ' + cls + '" href="' + codeHref(student.id, file, range, type) +
+            '" data-owner="' + esc(student.id) + '" data-file="' + esc(file) + '" data-range="' + range +
+            '">\u25b8 ' + esc(file + ", lines " + range) + "</a> ";
+        }
+      }
+    }
+    if (m.index === REF_RE.lastIndex) REF_RE.lastIndex++;
+  }
+  return chips.trim();
 }
 function badge(v) {
   const k = String(v || "").trim().toLowerCase();
@@ -339,11 +403,15 @@ function copyCard(student, copy) {
   const otherIdx = other ? fileIndex(other, copy.other_file) : -1;
   if (thisIdx >= 0) {
     const r = parseRange(copy.this_lines);
-    links += '<a class="codelink own" href="' + codeHref(student.id, student.code[thisIdx].file, r ? r.join("-") : "", "own") + '" title="Open own submission at these lines">\u25b8 own: ' + esc(thisRef) + "</a> ";
+    links += '<a class="codelink own" href="' + codeHref(student.id, student.code[thisIdx].file, r ? r.join("-") : "", "own") +
+      '" data-owner="' + esc(student.id) + '" data-file="' + esc(student.code[thisIdx].file) + '" data-range="' + (r ? r.join("-") : "") +
+      '">\u25b8 own: ' + esc(thisRef) + "</a> ";
   } else if (thisRef) links += '<span class="codelink dead" title="File not found in the available submission text">\u25b8 own: ' + esc(thisRef) + "</span> ";
   if (other && otherIdx >= 0) {
     const r = parseRange(copy.other_lines);
-    links += '<a class="codelink other" href="' + codeHref(other.id, other.code[otherIdx].file, r ? r.join("-") : "", "other") + '" title="Open the other student\'s submission at these lines">\u25b8 their: ' + esc(otherRef) + "</a>";
+    links += '<a class="codelink other" href="' + codeHref(other.id, other.code[otherIdx].file, r ? r.join("-") : "", "other") +
+      '" data-owner="' + esc(other.id) + '" data-file="' + esc(other.code[otherIdx].file) + '" data-range="' + (r ? r.join("-") : "") +
+      '">\u25b8 their: ' + esc(otherRef) + "</a>";
   } else if (otherRef) links += '<span class="codelink dead" title="File not available (missing output or unknown file)">\u25b8 their: ' + esc(otherRef) + "</span>";
   return '<div class="copycard"><div class="who">From ' + who +
     (other ? ' <span class="pseudo">(' + esc(other.pseudonym) + ")</span>" : "") + "</div>" +
@@ -376,6 +444,8 @@ function detail(student, code) {
     badge(String(r.looks_llm_generated || "uncertain")) + "</div>";
   (r.llm_generation_indicators || []).forEach(ind => {
     html += '<div class="task">' + annotate(ind, student, null, "note") + "</div>";
+    const chips = refChips(student, ind, "note", "note");
+    if (chips) html += '<div class="codelinks">' + chips + "</div>";
   });
   html += '<h3>4. Indications of copying code from another student?</h3>';
   const copies = r.code_copy_indications || [];
@@ -439,7 +509,8 @@ function render() {
       overviewTable() +
       '<div class="footer">Evidence-based indicators for human review (oral verification). ' +
       "They do not prove plagiarism, unauthorized collaboration, or improper AI-tool use. " +
-      "Line numbers refer to lines inside each submission file, as seen in the pseudonymized workspace.</div>";
+      "Line numbers refer to lines inside each submission file, as seen in the pseudonymized workspace. " +
+      "Hover over any code chip or line reference to preview the code at those lines.</div>";
     const q = document.getElementById("q");
     if (q) q.addEventListener("input", () => {
       const v = q.value.toLowerCase();
@@ -449,6 +520,50 @@ function render() {
     });
   }
 }
+// Hover preview: a popup next to the cursor showing the referenced code lines.
+const tip = document.getElementById("codetip");
+let tipFor = null;
+function moveTip(x, y) {
+  const pad = 14;
+  const r = tip.getBoundingClientRect();
+  let left = x + pad;
+  let top = y + pad;
+  if (left + r.width > window.innerWidth - 8) left = Math.max(8, x - r.width - pad);
+  if (top + r.height > window.innerHeight - 8) top = Math.max(8, y - r.height - pad);
+  tip.style.left = left + "px";
+  tip.style.top = top + "px";
+}
+function hideTip() {
+  tipFor = null;
+  tip.hidden = true;
+}
+function tipAnchor(e) {
+  return e.target && e.target.closest ? e.target.closest("a[data-owner]") : null;
+}
+document.addEventListener("mouseover", e => {
+  const el = tipAnchor(e);
+  if (!el || el === tipFor) return;
+  hideTip();
+  const owner = STUDENTS[el.dataset.owner];
+  if (!owner) return;
+  const idx = fileIndex(owner, el.dataset.file || "");
+  if (idx < 0) return;
+  const range = el.dataset.range ? parseRange(el.dataset.range) : null;
+  const html = codeTip(owner, idx, range);
+  if (!html) return;
+  tip.innerHTML = html;
+  tip.hidden = false;
+  tipFor = el;
+  moveTip(e.clientX, e.clientY);
+});
+document.addEventListener("mousemove", e => {
+  if (tipFor && tipAnchor(e) === tipFor) moveTip(e.clientX, e.clientY);
+});
+document.addEventListener("mouseout", e => {
+  if (!tipFor) return;
+  const to = e.relatedTarget;
+  if (!to || !to.contains || !tipFor.contains(to)) hideTip();
+});
 window.addEventListener("hashchange", render);
 render();
 </script>
