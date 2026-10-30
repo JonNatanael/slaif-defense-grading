@@ -62,6 +62,7 @@ MISSING_REPORT_COLUMNS = [
 ]
 FINAL_REPORT_CSV = "final_report.csv"
 FINAL_REPORT_PDF = "final_report.pdf"
+PROCESSING_STATS_JSON = "processing_stats.json"
 
 
 def safe_filename(value: str) -> str:
@@ -218,6 +219,50 @@ def load_assessment_report(path: Path) -> Tuple[Optional[Dict[str, object]], Opt
     return data, None
 
 
+def load_processing_stats(path: Path) -> Tuple[Optional[Dict[str, object]], Optional[str]]:
+    """Load optional, pseudonymized timing statistics written by process.sh."""
+    if not path.exists():
+        return None, f"{PROCESSING_STATS_JSON} was not found; process.sh may not have been run"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        return None, f"{PROCESSING_STATS_JSON} could not be read: {exc}"
+    except json.JSONDecodeError as exc:
+        return None, f"{PROCESSING_STATS_JSON} is not valid JSON: {exc}"
+    if not isinstance(data, dict):
+        return None, f"{PROCESSING_STATS_JSON} must contain a JSON object"
+
+    required_numbers = (
+        "planned_students",
+        "processed_students",
+        "successful_students",
+        "failed_students",
+        "total_time_seconds",
+        "average_time_seconds",
+    )
+    missing = [field for field in ("run_status", "students", *required_numbers) if field not in data]
+    if missing:
+        return None, f"{PROCESSING_STATS_JSON} is missing required field(s): {', '.join(missing)}"
+    invalid_numbers = [
+        field
+        for field in required_numbers
+        if not isinstance(data.get(field), (int, float)) or isinstance(data.get(field), bool)
+    ]
+    if invalid_numbers:
+        return None, f"{PROCESSING_STATS_JSON} has non-numeric field(s): {', '.join(invalid_numbers)}"
+    if not isinstance(data.get("students"), list):
+        return None, f"{PROCESSING_STATS_JSON} field 'students' must be a list"
+    return data, None
+
+
+def format_seconds(value: object) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "Unknown"
+    return f"{number:.3f}".rstrip("0").rstrip(".") + " seconds"
+
+
 def write_named_student_output(source: Path, target: Path, student: FinalizeStudent) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     content = source.read_text(encoding="utf-8", errors="replace")
@@ -240,6 +285,9 @@ def write_finalize_report(
     html_warnings: Sequence[str] = (),
     final_report_pdf: str = "",
     final_report_html: str = "",
+    processing_stats: Optional[Dict[str, object]] = None,
+    processing_stats_problem: Optional[str] = None,
+    student_names: Optional[Dict[str, str]] = None,
 ) -> None:
     lines = [
         "# Finalize Report",
@@ -276,6 +324,40 @@ def write_finalize_report(
     else:
         lines.append("- None")
 
+    lines.extend(["", "## Processing Statistics", ""])
+    if processing_stats is None:
+        lines.append(f"- Not available: {processing_stats_problem or 'no processing statistics were provided'}")
+    else:
+        lines.extend(
+            [
+                f"- Run status: {processing_stats['run_status']}",
+                f"- Planned students: {processing_stats['planned_students']}",
+                f"- Processed students: {processing_stats['processed_students']}",
+                f"- Successful students: {processing_stats['successful_students']}",
+                f"- Failed students: {processing_stats['failed_students']}",
+                f"- Total elapsed time: {format_seconds(processing_stats['total_time_seconds'])}",
+                f"- Average time per processed student: {format_seconds(processing_stats['average_time_seconds'])}",
+                "",
+                "### Per-Student Times",
+                "",
+            ]
+        )
+        student_rows = processing_stats.get("students")
+        if isinstance(student_rows, list) and student_rows:
+            names = student_names or {}
+            for raw_row in student_rows:
+                if not isinstance(raw_row, dict):
+                    continue
+                pseudonym = str(raw_row.get("pseudonym") or "Unknown")
+                name = names.get(pseudonym)
+                label = f"`{pseudonym}` / {name}" if name else f"`{pseudonym}`"
+                lines.append(
+                    f"- {label}: {format_seconds(raw_row.get('duration_seconds'))} "
+                    f"(exit code {raw_row.get('exit_code', 'Unknown')})"
+                )
+        else:
+            lines.append("- None completed yet")
+
     lines.extend(["", "## PDF Rendering Warnings", ""])
     if pdf_warnings:
         lines.extend(f"- `{warning}`" for warning in pdf_warnings)
@@ -311,6 +393,7 @@ def finalize_outputs(workspace: Path, private_output: Path, output: Path, strict
         raise FileNotFoundError(f"required student outputs directory does not exist: {private_student_outputs}")
 
     map_fieldnames, students = read_pseudonym_map(pseudonym_map)
+    processing_stats, processing_stats_problem = load_processing_stats(workspace / PROCESSING_STATS_JSON)
     student_output_files = read_student_outputs_index(student_outputs_index)
     safe_names = unique_safe_names(students)
     extra_fields = [field for field in map_fieldnames if field not in set(FINAL_INDEX_BASE_COLUMNS)]
@@ -460,6 +543,9 @@ def finalize_outputs(workspace: Path, private_output: Path, output: Path, strict
         html_warnings=html_warnings,
         final_report_pdf=final_report_pdf,
         final_report_html=final_report_html,
+        processing_stats=processing_stats,
+        processing_stats_problem=processing_stats_problem,
+        student_names=other_student_names,
     )
 
     if strict and missing_report_rows:

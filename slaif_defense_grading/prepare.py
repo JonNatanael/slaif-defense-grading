@@ -6,7 +6,7 @@ import re
 import shutil
 import tempfile
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
 
@@ -215,6 +215,63 @@ def read_roster(students_csv: Path) -> List[RosterStudent]:
         )
 
     return students
+
+
+def apply_student_id_order(students: Sequence[RosterStudent], order_file: Path) -> List[RosterStudent]:
+    """Prioritize roster rows using a headerless, one-student-id-per-line file.
+
+    IDs named in the file come first in the requested order. Roster rows not named
+    in the file retain their relative CSV order and follow the prioritized rows.
+    Pseudonyms are assigned only after this ordering has been applied.
+    """
+    if students and "student_id" not in students[0].fieldnames:
+        raise ValueError("--student-order-file requires a student_id column in students CSV")
+
+    raw = order_file.read_bytes()
+    encoding = detect_bom_encoding(raw[:4])
+    try:
+        text = raw.decode(encoding)
+    except UnicodeError as exc:
+        raise ValueError(
+            "student order file could not be decoded as text; save it as UTF-8 or UTF-16. "
+            f"Details: {exc}"
+        ) from exc
+
+    ordered_ids = [line.strip() for line in text.lstrip("\ufeff").splitlines() if line.strip()]
+    if not ordered_ids:
+        raise ValueError("student order file does not contain any student IDs")
+
+    seen_ids: set[str] = set()
+    duplicate_order_ids: set[str] = set()
+    for student_id in ordered_ids:
+        if student_id in seen_ids:
+            duplicate_order_ids.add(student_id)
+        seen_ids.add(student_id)
+    if duplicate_order_ids:
+        raise ValueError(
+            "student order file contains duplicate student ID(s): " + ", ".join(sorted(duplicate_order_ids))
+        )
+
+    roster_by_id: Dict[str, List[RosterStudent]] = {}
+    for student in students:
+        student_id = (student.row.get("student_id") or "").strip()
+        if student_id:
+            roster_by_id.setdefault(student_id, []).append(student)
+
+    unknown_ids = [student_id for student_id in ordered_ids if student_id not in roster_by_id]
+    if unknown_ids:
+        raise ValueError("student order file contains ID(s) not found in students CSV: " + ", ".join(unknown_ids))
+
+    ambiguous_ids = [student_id for student_id in ordered_ids if len(roster_by_id[student_id]) != 1]
+    if ambiguous_ids:
+        raise ValueError(
+            "student order file contains ID(s) that are not unique in students CSV: " + ", ".join(ambiguous_ids)
+        )
+
+    prioritized = [roster_by_id[student_id][0] for student_id in ordered_ids]
+    prioritized_rows = {student.row_number for student in prioritized}
+    reordered = [*prioritized, *(student for student in students if student.row_number not in prioritized_rows)]
+    return [replace(student, pseudonym_index=index) for index, student in enumerate(reordered, start=1)]
 
 
 def write_workspace_students_csv(students: Sequence[RosterStudent], workspace: Path) -> None:
@@ -598,15 +655,22 @@ def prepare_workspace(
     template_path: Path,
     workspace_agents_template: Path,
     report_template: Path,
+    student_order_file: Optional[Path] = None,
     include_opaque_documents: bool = False,
     codex_profile: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
 ) -> PrepareResult:
     students = read_roster(students_csv)
+    workspace_resolved = workspace.resolve()
+    if student_order_file is not None:
+        if not student_order_file.exists():
+            raise FileNotFoundError(f"student order file does not exist: {student_order_file}")
+        if is_relative_to(student_order_file.resolve(), workspace_resolved):
+            raise ValueError("--student-order-file must be outside --workspace because it contains real student IDs")
+        students = apply_student_id_order(students, student_order_file)
     roster_by_identity = {normalize_identity(f"{student.name} {student.surname}"): student for student in students}
     roster_by_email, roster_by_id = roster_identifier_indexes(students)
 
-    workspace_resolved = workspace.resolve()
     private_output_resolved = private_output.resolve()
     if workspace_resolved == private_output_resolved or is_relative_to(private_output_resolved, workspace_resolved):
         raise ValueError("--private-output must be outside --workspace")

@@ -55,7 +55,8 @@ python3 slaif-defense-grading.py prepare \
 `prepare` currently:
 
 - reads the private real `students.csv` locally;
-- assigns deterministic pseudonyms in CSV order, such as `Student 0001`;
+- optionally prioritizes students from a private ordered-ID file;
+- assigns deterministic pseudonyms in the resulting processing order, such as `Student 0001`;
 - processes Moodle/Canvas-style ZIP exports with safe ZIP extraction;
 - creates a pseudonymized agent workspace;
 - writes private `pseudonym_map.csv` outside the workspace;
@@ -72,6 +73,30 @@ python3 slaif-defense-grading.py prepare \
 
 Later ZIPs override earlier submissions for duplicate LMS student folders.
 
+### Prioritize The Processing Order
+
+By default, pseudonyms and `process.sh` commands follow `students.csv` order. To process selected students first, create a private, headerless text file with one exact `student_id` per line:
+
+```text
+63240017
+63240003
+63240041
+```
+
+Then pass it to `prepare`:
+
+```bash
+python3 slaif-defense-grading.py prepare \
+  --input-file moodle_export.zip \
+  --students-csv students.csv \
+  --student-order-file student-order.txt \
+  --task-file assignment.pdf \
+  --workspace workspace/lab-agent \
+  --private-output workspace/lab-private
+```
+
+Listed students are moved to the front in file order and receive the first pseudonyms. Students omitted from the order file follow in their original CSV order. This option requires a `student_id` column in `students.csv`. The order file must be outside the workspace, is used locally, and is never copied into the pseudonymized workspace. Preparation fails if a listed ID is unknown, repeated in the order file, or non-unique in `students.csv`.
+
 ## Generated Outputs
 
 Agent-facing workspace:
@@ -83,6 +108,7 @@ lab-agent/
   Student_0002.txt
   associations.csv
   process.sh
+  processing_stats.json  # created and updated when process.sh runs
   report_template.json
   students.csv
   task.pdf
@@ -136,11 +162,13 @@ cd workspace/lab-agent
 ./process.sh
 ```
 
-`process.sh` detaches from the interactive terminal (`exec < /dev/null`), so each `codex exec` run exits on its own and the next student starts automatically. It runs one Codex command per pseudonymized student in roster order:
+`process.sh` detaches from the interactive terminal (`exec < /dev/null`), so each `codex exec` run exits on its own and the next student starts automatically. It runs one Codex command per pseudonymized student in pseudonym order (the ordered-ID priority described above, then remaining CSV order):
 
 ```bash
 codex -p qwen-neumann --ask-for-approval never -s workspace-write exec --skip-git-repo-check "Run submission assessment for Student 0001"
 ```
+
+At the start of each run, `process.sh` creates `processing_stats.json` in the pseudonymized workspace and updates it atomically after every attempted student. It records only pseudonyms, per-student elapsed seconds and exit codes, plus planned/processed/success/failed counts, run status, total elapsed time, and average time per processed student. A failed or interrupted run retains the latest completed update; rerunning `process.sh` starts a fresh statistics file.
 
 ### Model Selection
 
@@ -160,6 +188,10 @@ python3 slaif-defense-grading.py finalize \
   --private-output workspace/lab-private \
   --output workspace/final
 ```
+
+You can run `finalize` before `process.sh` has finished. Without `--strict`, it produces partial instructor outputs for valid reports already present, records unfinished students in `missing_reports.csv`, and shows `Unknown`/`No report` for them in the overview. It is safe to run the same command again later to refresh the output as more reports arrive. Do not use `--strict` for a partial run.
+
+When `processing_stats.json` is available, `finalize_report.md` includes its total and average times and a per-student timing list resolved to private student names. Missing or malformed statistics are reported as unavailable and do not prevent finalization.
 
 Final output is private/local and may contain real student identities:
 

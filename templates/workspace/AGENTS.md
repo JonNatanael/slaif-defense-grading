@@ -29,6 +29,7 @@ Do not treat these files or directories as submissions:
 - `task.*`
 - `report_template.json`
 - `process.sh`
+- `processing_stats.json` (when present; it is maintained by `process.sh`)
 - already generated report folders
 
 ## Command Scope
@@ -96,5 +97,6 @@ Do not modify preprocessing files:
 - `task.*`
 - `report_template.json`
 - `process.sh`
+- `processing_stats.json` (when present; it is maintained by `process.sh`)
 
 Only create or update the target student's report folder and files needed for that report.

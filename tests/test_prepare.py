@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import re
 import shutil
 import stat
@@ -272,6 +273,7 @@ def test_prepare_help_works() -> None:
 
     assert result.returncode == 0
     assert "--students-csv" in result.stdout
+    assert "--student-order-file" in result.stdout
     assert "--private-output" in result.stdout
     assert "--include-opaque-documents" in result.stdout
     assert "--codex-profile" in result.stdout
@@ -395,6 +397,26 @@ def test_finalize_collects_named_outputs_and_missing_reports(tmp_path: Path) -> 
     }
     original_report = json.dumps(report, indent=2) + "\n"
     workspace_report.write_text(original_report, encoding="utf-8", newline="\n")
+    (workspace / "processing_stats.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "run_status": "running",
+                "started_at": "2026-01-01T12:00:00Z",
+                "ended_at": None,
+                "planned_students": 2,
+                "processed_students": 1,
+                "successful_students": 1,
+                "failed_students": 0,
+                "total_time_seconds": 12,
+                "average_time_seconds": 12.0,
+                "students": [{"pseudonym": "Student 0001", "duration_seconds": 12, "exit_code": 0}],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
 
     output = tmp_path / "final"
     result = subprocess.run(
@@ -481,6 +503,11 @@ def test_finalize_collects_named_outputs_and_missing_reports(tmp_path: Path) -> 
     assert "- Final report (single-table overview): `final_report.pdf` and `final_report.csv`" in finalize_report
     assert "`Student 0002` / Boris Kovac: report.json was not found in the pseudonymized workspace" in finalize_report
     assert "Instructor reports are assessments for human review" in finalize_report
+    assert "## Processing Statistics" in finalize_report
+    assert "Run status: running" in finalize_report
+    assert "Total elapsed time: 12 seconds" in finalize_report
+    assert "Average time per processed student: 12 seconds" in finalize_report
+    assert "`Student 0001` / Ana Novak: 12 seconds (exit code 0)" in finalize_report
     assert "## PDF Rendering Warnings" in finalize_report
 
     final_report_pdf = output / "final_report.pdf"
@@ -914,6 +941,7 @@ def test_prepare_creates_pseudonymized_workspace_and_private_outputs(tmp_path: P
     assert "preprocessing" in agents_text
     assert "already done locally" in agents_text
     assert "Do not redo preprocessing" in agents_text
+    assert "`processing_stats.json` (when present; it is maintained by `process.sh`)" in agents_text
     assert "reasonably strong" in agents_text
     assert "most obviously copied" in agents_text
     assert "import statements" in agents_text
@@ -1022,6 +1050,82 @@ def test_prepare_creates_pseudonymized_workspace_and_private_outputs(tmp_path: P
     assert "Student-visible concatenated outputs were written to `student_outputs/`" in report
     assert "`student_outputs_index.csv` maps those pseudonymized files back to real roster rows" in report
 
+
+def test_generated_process_script_writes_timing_statistics(tmp_path: Path) -> None:
+    workspace, _private_output, prepare_result = run_prepare(tmp_path)
+    assert prepare_result.returncode == 0, prepare_result.stderr
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_codex = fake_bin / "codex"
+    write_text(fake_codex, "#!/bin/bash\nsleep 1\n")
+    fake_codex.chmod(0o755)
+
+    result = subprocess.run(
+        ["bash", "process.sh"],
+        cwd=workspace,
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    stats = json.loads((workspace / "processing_stats.json").read_text(encoding="utf-8"))
+    assert stats["schema_version"] == 1
+    assert stats["run_status"] == "completed"
+    assert stats["planned_students"] == 2
+    assert stats["processed_students"] == 2
+    assert stats["successful_students"] == 2
+    assert stats["failed_students"] == 0
+    assert stats["total_time_seconds"] >= 2
+    assert stats["average_time_seconds"] >= 1
+    assert [row["pseudonym"] for row in stats["students"]] == ["Student 0001", "Student 0002"]
+    assert all(row["duration_seconds"] >= 1 for row in stats["students"])
+    assert all(row["exit_code"] == 0 for row in stats["students"])
+
+
+def test_prepare_prioritizes_student_ids_before_pseudonymization(tmp_path: Path) -> None:
+    order_file = tmp_path / "student-order.txt"
+    write_text(order_file, "63240002\n")
+
+    workspace, private_output, result = run_prepare(
+        tmp_path,
+        extra_args=["--student-order-file", str(order_file)],
+    )
+
+    assert result.returncode == 0, result.stderr
+    with (private_output / "pseudonym_map.csv").open("r", encoding="utf-8", newline="") as f:
+        map_rows = list(csv.DictReader(f))
+    assert [(row["pseudonym"], row["student_id"]) for row in map_rows] == [
+        ("Student 0001", "63240002"),
+        ("Student 0002", "63240001"),
+    ]
+
+    assert not (workspace / "Student_0001.txt").exists()
+    assert (workspace / "Student_0002.txt").exists()
+    student_text = (workspace / "Student_0002.txt").read_text(encoding="utf-8")
+    assert "==== BEGIN Student 0002 | submission | main.py ====" in student_text
+    assert "63240002" not in (workspace / "process.sh").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    ("contents", "error"),
+    [
+        ("99999999\n", "not found in students CSV"),
+        ("63240001\n63240001\n", "duplicate student ID"),
+    ],
+)
+def test_prepare_rejects_invalid_student_order_file(tmp_path: Path, contents: str, error: str) -> None:
+    order_file = tmp_path / "student-order.txt"
+    write_text(order_file, contents)
+
+    _workspace, _private_output, result = run_prepare(
+        tmp_path,
+        extra_args=["--student-order-file", str(order_file)],
+    )
+
+    assert result.returncode == 2
+    assert error in result.stderr
 
 
 def test_prepare_codex_profile_none_omits_profile_flag(tmp_path: Path) -> None:

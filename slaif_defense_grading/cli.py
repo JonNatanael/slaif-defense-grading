@@ -50,7 +50,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
             Create private named final outputs after the agent has run in the pseudonymized
             workspace. This command reads the workspace and private prepare outputs, maps
             pseudonyms back to real local roster rows, and writes instructor-facing files
-            under --output. It does not modify the pseudonymized workspace.
+            under --output. It does not modify the pseudonymized workspace. By default,
+            partial results are allowed and missing reports are recorded; --strict requires
+            every expected report to be present and valid.
             """
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -96,6 +98,13 @@ def add_prepare_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--students-csv", required=True, help="Private local roster CSV with at least name,surname.")
     parser.add_argument(
+        "--student-order-file",
+        help=(
+            "Optional private, headerless text file with one student_id per line. Listed students are "
+            "pseudonymized and processed first in file order; unlisted students retain CSV order afterward."
+        ),
+    )
+    parser.add_argument(
         "--task-file",
         required=True,
         help=(
@@ -123,7 +132,7 @@ def add_finalize_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--workspace", required=True, help="Prepared pseudonymized workspace after the agent has run.")
     parser.add_argument("--private-output", required=True, help="Private output directory created by prepare.")
     parser.add_argument("--output", required=True, help="Private final output directory for named instructor outputs.")
-    parser.add_argument("--strict", action="store_true", help="Fail if any expected report_aspects.md is missing.")
+    parser.add_argument("--strict", action="store_true", help="Fail if any expected report.json is missing or invalid.")
 
 
 def build_prepare_parser() -> argparse.ArgumentParser:
@@ -151,6 +160,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 def run_prepare(args: argparse.Namespace) -> int:
     input_zips = [Path(raw).expanduser().resolve() for raw in args.input_file]
     students_csv = Path(args.students_csv).expanduser().resolve()
+    student_order_file = Path(args.student_order_file).expanduser().resolve() if args.student_order_file else None
     task_file = Path(args.task_file).expanduser().resolve()
     workspace = Path(args.workspace).expanduser().resolve()
     private_output = Path(args.private_output).expanduser().resolve()
@@ -168,6 +178,7 @@ def run_prepare(args: argparse.Namespace) -> int:
         result = prepare_workspace(
             input_zips=input_zips,
             students_csv=students_csv,
+            student_order_file=student_order_file,
             task_file=task_file,
             workspace=workspace,
             private_output=private_output,

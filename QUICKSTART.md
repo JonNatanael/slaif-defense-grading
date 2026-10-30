@@ -14,6 +14,7 @@ Prepare these local files:
 
 - Moodle/Canvas export ZIP, for example `moodle_export.zip`;
 - real local `students.csv` with at least `name,surname` (comma-separated; UTF-8 or UTF-16 with BOM both work). A raw tab-separated LMS student-list export is not a roster and must be converted to `name,surname,...` first;
+- optional private student-order text file with one exact `student_id` per line and no header;
 - assignment file, for example `assignment.pdf` or `task.tex`.
 
 Do not commit real rosters, submission ZIPs, generated workspaces, private mappings, or final outputs.
@@ -38,6 +39,8 @@ python3 slaif-defense-grading.py prepare \
 ```
 
 The assignment is copied into the workspace under a canonical name such as `task.pdf` or `task.tex`; the original basename is not preserved.
+
+To grade selected students first, add `--student-order-file student-order.txt`. This requires a `student_id` column in `students.csv`. Listed IDs are pseudonymized and processed first in file order; students not listed follow in their original CSV order. Keep the order file outside the workspace so it stays private/local. Unknown, duplicate, or non-unique listed IDs cause `prepare` to fail.
 
 Default mode excludes opaque documents such as PDF/DOCX/DOC/ODT/RTF because their internal content and metadata are not redacted.
 
@@ -65,7 +68,9 @@ cd work/lab-agent
 cd -
 ```
 
-`process.sh` runs one Codex command per pseudonymized student in roster order, using the `qwen-neumann` Codex profile with a `medium` reasoning effort by default (`--codex-profile` and `--codex-reasoning-effort` at prepare time select another profile/effort or `none` to fall back to the Codex CLI default). It does not run Phase 1; `associations.csv` was generated locally by `prepare`.
+`process.sh` runs one Codex command per pseudonymized student in priority order (ordered-ID file first, then remaining CSV order), using the configured Codex profile with a `medium` reasoning effort by default (`--codex-profile` and `--codex-reasoning-effort` at prepare time select another profile/effort or `none` to fall back to the Codex CLI default). It does not run Phase 1; `associations.csv` was generated locally by `prepare`.
+
+While it runs, the script atomically updates `work/lab-agent/processing_stats.json` after each attempted student. The JSON contains pseudonymized per-student durations and exit codes, total elapsed time, average time, counts, and run status. Rerunning the whole script starts a fresh statistics file.
 
 ## Finalize Named Local Outputs
 
@@ -87,6 +92,10 @@ python3 slaif-defense-grading.py finalize \
   --output work/final \
   --strict
 ```
+
+For time-constrained partial results, run `finalize` without `--strict` while `process.sh` is still working. Completed valid reports are included, unfinished students are listed in `missing_reports.csv` and shown as `Unknown`/`No report`, and rerunning the command later refreshes the outputs. `--strict` intentionally returns an error if any report is missing.
+
+If processing statistics are available, their summary and per-student times appear in `work/final/finalize_report.md`. Missing or invalid statistics do not block finalization.
 
 ## Inspect Final Outputs
 
