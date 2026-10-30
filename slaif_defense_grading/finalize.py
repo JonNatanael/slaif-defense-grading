@@ -516,7 +516,12 @@ def finalize_outputs(workspace: Path, private_output: Path, output: Path, strict
 
     final_report_pdf = ""
     try:
-        render_final_report_pdf(overview_rows, output / FINAL_REPORT_PDF)
+        render_final_report_pdf(
+            overview_rows,
+            output / FINAL_REPORT_PDF,
+            processing_stats=processing_stats,
+            student_names=other_student_names,
+        )
         final_report_pdf = FINAL_REPORT_PDF
     except RuntimeError as exc:
         pdf_warnings.append(f"final report: {exc}")

@@ -191,7 +191,7 @@ python3 slaif-defense-grading.py finalize \
 
 You can run `finalize` before `process.sh` has finished. Without `--strict`, it produces partial instructor outputs for valid reports already present, records unfinished students in `missing_reports.csv`, and shows `Unknown`/`No report` for them in the overview. It is safe to run the same command again later to refresh the output as more reports arrive. Do not use `--strict` for a partial run.
 
-When `processing_stats.json` is available, `finalize_report.md` includes its total and average times and a per-student timing list resolved to private student names. Missing or malformed statistics are reported as unavailable and do not prevent finalization.
+When `processing_stats.json` is available, the private `final_report.pdf` and `finalize_report.md` include its total and average times and a per-student timing list resolved to private student names. Missing or malformed statistics are reported as unavailable and do not prevent finalization.
 
 Final output is private/local and may contain real student identities:
 

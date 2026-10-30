@@ -516,6 +516,10 @@ def test_finalize_collects_named_outputs_and_missing_reports(tmp_path: Path) -> 
     assert final_pdf_bytes.startswith(b"%PDF-")
     assert b"%%EOF" in final_pdf_bytes[-32:]
     assert b"/Type /Page" in final_pdf_bytes
+    # The statistics are rendered on their own page (text encoding varies
+    # when a Unicode font is available, so content is asserted below with
+    # deterministic core fonts).
+    assert final_pdf_bytes.count(b"/Type /Page") >= 2
 
     with (output / "final_report.csv").open("r", encoding="utf-8", newline="") as f:
         final_report_rows = list(csv.DictReader(f))
@@ -1748,3 +1752,32 @@ def test_pdf_report_renders_with_core_fonts(tmp_path: Path, monkeypatch) -> None
     assert b"lines 12-34" in pdf_bytes
     assert b"lines 3-11" in pdf_bytes
     assert b"not a finding of misconduct" not in pdf_bytes or b"does not prove" in pdf_bytes
+
+    final_output = pdf_report.render_final_report_pdf(
+        [
+            {
+                "full_name": "Ana Novak",
+                "all_tasks_implemented": "Yes",
+                "copying_indications": "No",
+                "llm_indications": "Uncertain",
+                "notes": "None.",
+            }
+        ],
+        tmp_path / "final_report.pdf",
+        processing_stats={
+            "run_status": "completed",
+            "planned_students": 1,
+            "processed_students": 1,
+            "successful_students": 1,
+            "failed_students": 0,
+            "total_time_seconds": 12,
+            "average_time_seconds": 12.0,
+            "students": [{"pseudonym": "Student 0001", "duration_seconds": 12, "exit_code": 0}],
+        },
+        student_names={"Student 0001": "Ana Novak"},
+    )
+    final_pdf_bytes = final_output.read_bytes()
+    assert b"Processing Statistics" in final_pdf_bytes
+    assert b"Total elapsed time: 12 seconds" in final_pdf_bytes
+    assert b"Average time per processed student: 12 seconds" in final_pdf_bytes
+    assert b"Ana Novak (Student 0001)" in final_pdf_bytes

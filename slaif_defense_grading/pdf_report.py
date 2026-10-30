@@ -232,11 +232,19 @@ def _clip_cell(text: str, limit: int = MAX_FINAL_REPORT_CELL_CHARS) -> str:
     return text[: limit - 3].rstrip() + "..."
 
 
-def render_final_report_pdf(rows: Sequence[Dict[str, str]], output_path: Path) -> Path:
+def render_final_report_pdf(
+    rows: Sequence[Dict[str, str]],
+    output_path: Path,
+    processing_stats: Optional[Dict[str, object]] = None,
+    student_names: Optional[Dict[str, str]] = None,
+) -> Path:
     """Render the single-table final overview PDF: one row per roster student.
 
     Each row is keyed by FINAL_REPORT_CSV_COLUMNS and holds short cells
     (Yes/No/Unknown, "Yes (with <name>)", Likely/Unlikely/Uncertain, notes).
+    When available, pseudonymized timing statistics from process.sh are
+    included on a separate page, with names resolved only in this private
+    instructor-facing output.
     """
     try:
         from fpdf import FPDF
@@ -297,6 +305,67 @@ def render_final_report_pdf(rows: Sequence[Dict[str, str]], output_path: Path) -
         new_x="LMARGIN",
         new_y="NEXT",
     )
+
+    pdf.add_page()
+    pdf.set_font(font_family, "B", 15)
+    pdf.multi_cell(0, 7, safe("Processing Statistics"), new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font(font_family, "", 10)
+    if processing_stats is None:
+        pdf.multi_cell(
+            0,
+            5,
+            safe("Not available: process.sh has not written processing_stats.json."),
+            new_x="LMARGIN",
+            new_y="NEXT",
+        )
+    else:
+        def duration(value: object) -> str:
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return "Unknown"
+            return f"{number:.3f}".rstrip("0").rstrip(".") + " seconds"
+
+        summary = (
+            f"Run status: {processing_stats.get('run_status', 'Unknown')}\n"
+            f"Planned students: {processing_stats.get('planned_students', 'Unknown')}\n"
+            f"Processed students: {processing_stats.get('processed_students', 'Unknown')}\n"
+            f"Successful students: {processing_stats.get('successful_students', 'Unknown')}\n"
+            f"Failed students: {processing_stats.get('failed_students', 'Unknown')}\n"
+            f"Total elapsed time: {duration(processing_stats.get('total_time_seconds'))}\n"
+            f"Average time per processed student: {duration(processing_stats.get('average_time_seconds'))}"
+        )
+        pdf.multi_cell(0, 5, safe(summary), new_x="LMARGIN", new_y="NEXT")
+
+        student_rows = processing_stats.get("students")
+        if isinstance(student_rows, list) and student_rows:
+            pdf.ln(2)
+            pdf.set_font(font_family, "B", 11)
+            pdf.multi_cell(0, 6, safe("Per-student processing times"), new_x="LMARGIN", new_y="NEXT")
+            names = student_names or {}
+            timing_rows: List[List[str]] = [["Student", "Processing time", "Exit code"]]
+            for student in student_rows:
+                if not isinstance(student, dict):
+                    continue
+                pseudonym = str(student.get("pseudonym") or "Unknown")
+                name = names.get(pseudonym)
+                label = f"{name} ({pseudonym})" if name else pseudonym
+                timing_rows.append(
+                    [
+                        safe(label),
+                        safe(duration(student.get("duration_seconds"))),
+                        safe(str(student.get("exit_code", "Unknown"))),
+                    ]
+                )
+            if len(timing_rows) > 1:
+                pdf.set_font(font_family, "", 9)
+                with pdf.table(
+                    rows=timing_rows,
+                    text_align="LEFT",
+                    line_height=pdf.font_size * 1.5,
+                    col_widths=(0.60, 0.25, 0.15),
+                ):
+                    pass
 
     pdf.output(str(output_path))
     return output_path
