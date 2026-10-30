@@ -159,6 +159,17 @@ def match_by_explicit_identifiers(
     return by_email if by_email is by_id else None
 
 
+def folder_private_identifiers(folder_name: str) -> List[str]:
+    """Return conservative private identity tokens exposed by an LMS folder name."""
+    label = infer_student_label_from_folder(folder_name)
+    display_name = label.split("=", 1)[0].strip()
+    identifiers = [display_name] if display_name else []
+    emails, student_ids = explicit_folder_identifiers(folder_name)
+    identifiers.extend(emails)
+    identifiers.extend(student_ids)
+    return identifiers
+
+
 def read_roster(students_csv: Path) -> List[RosterStudent]:
     raw = students_csv.read_bytes()
     encoding = detect_bom_encoding(raw[:4])
@@ -315,7 +326,9 @@ def optional_roster_fields(students: Sequence[RosterStudent]) -> List[str]:
     return [field for field in students[0].fieldnames if field not in {"name", "surname", "full_name"}]
 
 
-def iter_scrub_patterns(students: Sequence[RosterStudent]) -> Iterable[tuple[re.Pattern[str], str]]:
+def iter_scrub_patterns(
+    students: Sequence[RosterStudent], extra_private_identifiers: Sequence[str] = ()
+) -> Iterable[tuple[re.Pattern[str], str]]:
     for student in students:
         names = {student.full_name, f"{student.name} {student.surname}"}
         source_full_name = student.row.get("full_name")
@@ -335,17 +348,27 @@ def iter_scrub_patterns(students: Sequence[RosterStudent]) -> Iterable[tuple[re.
         if student_id:
             yield re.compile(re.escape(student_id)), student.pseudonym
 
+    for identifier in sorted({value.strip() for value in extra_private_identifiers if value.strip()}, key=len, reverse=True):
+        yield re.compile(re.escape(identifier), re.IGNORECASE), "[redacted private identifier]"
 
-def scrub_text(text: str, students: Sequence[RosterStudent]) -> str:
+
+def scrub_text(
+    text: str, students: Sequence[RosterStudent], extra_private_identifiers: Sequence[str] = ()
+) -> str:
     scrubbed = text
-    for pattern, replacement in iter_scrub_patterns(students):
+    for pattern, replacement in iter_scrub_patterns(students, extra_private_identifiers):
         scrubbed = pattern.sub(replacement, scrubbed)
     return scrubbed
 
 
-def readable_relative_path(path: Path, extracted_dir: Path, students: Sequence[RosterStudent]) -> str:
+def readable_relative_path(
+    path: Path,
+    extracted_dir: Path,
+    students: Sequence[RosterStudent],
+    extra_private_identifiers: Sequence[str] = (),
+) -> str:
     rel = path.relative_to(extracted_dir).as_posix()
-    rel = scrub_text(rel, students)
+    rel = scrub_text(rel, students, extra_private_identifiers)
     rel = re.sub(r"\s+", " ", rel).strip()
     return rel or "submission"
 
@@ -355,6 +378,7 @@ def write_pseudonymized_text_output(
     extracted_dirs: Sequence[Path],
     workspace: Path,
     all_students: Sequence[RosterStudent],
+    extra_private_identifiers: Sequence[str] = (),
 ) -> Path:
     output_path = workspace / f"{student.filename_stem}.txt"
 
@@ -369,8 +393,8 @@ def write_pseudonymized_text_output(
                 continue
 
             for readable_file in readable_files:
-                rel = readable_relative_path(readable_file, extracted_dir, all_students)
-                content = scrub_text(decode_text_file(readable_file), all_students)
+                rel = readable_relative_path(readable_file, extracted_dir, all_students, extra_private_identifiers)
+                content = scrub_text(decode_text_file(readable_file), all_students, extra_private_identifiers)
                 out.write(f"==== BEGIN {student.pseudonym} | submission | {rel} ====\n")
                 out.write(content)
                 if not content.endswith("\n"):
@@ -717,6 +741,11 @@ def prepare_workspace(
         unzipped_root.mkdir(parents=True, exist_ok=True)
 
         student_folders = sorted([p for p in outer_extract.iterdir() if p.is_dir()], key=lambda p: p.as_posix().casefold())
+        folder_identifiers = [
+            identifier
+            for student_folder_path in student_folders
+            for identifier in folder_private_identifiers(student_folder_path.name)
+        ]
         for student_folder_path in student_folders:
             folder_label = infer_student_label_from_folder(student_folder_path.name)
             student = roster_by_identity.get(normalize_identity(folder_label))
@@ -732,7 +761,13 @@ def prepare_workspace(
                 student_folder_path, outer_extract, unzipped_root, skipped_nested_zips
             )
             matched_students[student.row_number] = student
-            text_output = write_pseudonymized_text_output(student, extracted_dirs, workspace, students)
+            text_output = write_pseudonymized_text_output(
+                student,
+                extracted_dirs,
+                workspace,
+                students,
+                folder_identifiers,
+            )
             text_outputs_by_row[student.row_number] = text_output.name
             opaque_documents = opaque_document_relative_paths(extracted_dirs)
             copied_for_student: List[Path] = []

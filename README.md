@@ -16,6 +16,39 @@ The tool does not automatically prove misconduct. It helps prepare concrete, sub
 
 For a complete step-by-step run, see [QUICKSTART.md](QUICKSTART.md).
 
+## One-command Assignment Activation
+
+For the usual local layout, run the complete workflow with only a Codex profile
+and the assignment directory:
+
+```bash
+./activate_assignment.sh early-beta data_UZ/assignment_1
+```
+
+The assignment directory must contain exactly one instructor instruction file
+and one or more submission ZIPs. Its parent directory must contain exactly one
+private roster matching `students*.csv` (for example,
+`data_UZ/students_UZ.csv`). The script creates a fresh, private timestamped run
+under `data_UZ/assignment_1/.slaif-defense-grading/runs/`, then performs
+`prepare`, `process.sh`, and non-strict `finalize`. The final instructor files
+are in that run's `final/` directory; the pseudonym map remains in its sibling
+`private/` directory, outside `agent-workspace/`.
+
+Before preparation, the script privately normalizes common UTF-8/UTF-16
+comma-, semicolon-, and tab-separated roster exports. It recognizes separate
+name/surname columns and LMS-style combined `Priimek, Ime` (surname, name)
+columns, retaining recognized email and student-ID fields. The normalized CSV
+is stored only in the run's `private/` directory.
+
+If the parent data directory also contains a `student_order.txt` file,
+students are processed in the order that file lists (one student ID per line,
+headerless; IDs not listed keep their relative roster order and follow the
+listed ones). Without the file, roster order is used.
+
+If an agent invocation fails, the script still finalizes completed reports and
+the partial `processing_stats.json`, then exits with the process failure code.
+It rejects ambiguous roster or instruction-file discovery rather than guessing.
+
 ## What Problem This Solves
 
 Many lab assignments are completed outside direct supervision. Written submissions alone do not always show whether a student understands the work they submitted, and generic oral-defense questions are weak because they are not tied to the actual artifacts.

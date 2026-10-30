@@ -27,6 +27,40 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+## One-command Activation
+
+When your files use the standard local layout below, the activation script is
+the shortest complete workflow:
+
+```text
+data_UZ/
+  students_UZ.csv
+  assignment_1/
+    assignment_instructions.pdf
+    submissions.zip
+```
+
+```bash
+./activate_assignment.sh early-beta data_UZ/assignment_1
+```
+
+It is the only command you need to provide inputs for: profile first, then the
+assignment directory. It discovers the parent `students*.csv` roster, the one
+non-ZIP instruction file, and all ZIP submissions in the directory. It writes
+a new private run under `.slaif-defense-grading/runs/` inside the assignment
+directory, runs the agent, and finalizes completed reports. Ambiguous discovery
+stops with an error rather than selecting a file by guesswork.
+
+Optionally, add `student_order.txt` to the data directory (one student ID per
+line, no header) to process students in that order; IDs not listed keep their
+relative roster order and are processed after the listed ones.
+
+The activation step privately converts common LMS roster exports (UTF-8 or
+UTF-16; comma, semicolon, or tab-separated). It supports explicit name/surname
+columns and `Priimek, Ime` (surname, name), retaining recognized email and
+student-ID columns. The resulting canonical CSV remains only under the private
+run directory.
+
 ## Prepare Pseudonymized Workspace
 
 ```bash
@@ -95,7 +129,7 @@ python3 slaif-defense-grading.py finalize \
 
 For time-constrained partial results, run `finalize` without `--strict` while `process.sh` is still working. Completed valid reports are included, unfinished students are listed in `missing_reports.csv` and shown as `Unknown`/`No report`, and rerunning the command later refreshes the outputs. `--strict` intentionally returns an error if any report is missing.
 
-If processing statistics are available, their summary and per-student times appear in `work/final/finalize_report.md`. Missing or invalid statistics do not block finalization.
+If processing statistics are available, their summary and per-student times appear in `work/final/final_report.pdf` and `work/final/finalize_report.md`. Missing or invalid statistics do not block finalization.
 
 ## Inspect Final Outputs
 

@@ -1088,6 +1088,14 @@ def test_generated_process_script_writes_timing_statistics(tmp_path: Path) -> No
     assert all(row["exit_code"] == 0 for row in stats["students"])
 
 
+def test_workspace_text_redacts_identity_from_unlisted_lms_folder() -> None:
+    from slaif_defense_grading.prepare import folder_private_identifiers, scrub_text
+
+    identifiers = folder_private_identifiers("Bob Beta=bb123@example.invalid=10000002_1016174_assignsubmission_file")
+    assert identifiers == ["Bob Beta", "bb123@example.invalid", "10000002"]
+    assert scrub_text("# copied from Bob Beta\n", [], identifiers) == "# copied from [redacted private identifier]\n"
+
+
 def test_prepare_prioritizes_student_ids_before_pseudonymization(tmp_path: Path) -> None:
     order_file = tmp_path / "student-order.txt"
     write_text(order_file, "63240002\n")

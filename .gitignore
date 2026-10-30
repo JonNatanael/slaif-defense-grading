@@ -208,11 +208,13 @@ __marimo__/
 
 # Local preprocessing artifacts and sensitive student data
 data/
+data_*/
 .codex
 work/
 /workspace/
 private/
 outputs/
+.slaif-defense-grading/
 *.zip
 pseudonym_map.csv
 preprocessing_report.md
