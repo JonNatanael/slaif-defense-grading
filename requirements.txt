@@ -1,2 +1,3 @@
 pytest
 fpdf2
+pypdf

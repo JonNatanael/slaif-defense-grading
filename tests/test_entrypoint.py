@@ -82,8 +82,13 @@ def test_activation_script_runs_complete_workflow_with_only_profile_and_assignme
     fake_codex = fake_bin / "codex"
     fake_codex.write_text(
         "#!/usr/bin/env bash\n"
-        "student=${!#}\n"
-        "student=${student#Run submission assessment for }\n"
+        "prompt=${!#}\n"
+        "case \"$prompt\" in\n"
+        "  \"Analyze assignment requirements\")\n"
+        "    printf '%s\\n' '{\"schema_version\": 1, \"requirements\": [{\"id\": \"task-001\", \"description\": \"Implement the synthetic task by the behavior it asks for.\", \"source_reference\": \"task_extracted.txt line 1\"}], \"notes\": \"\"}' > task_requirements.json\n"
+        "    exit 0 ;;\n"
+        "esac\n"
+        "student=${prompt#Run submission assessment for }\n"
         "mkdir -p \"$student\"\n"
         "printf '%s\\n' '{\"pseudonym\": \"Student 0001\", \"assignment_submitted\": true, \"all_tasks_implemented\": true, \"task_details\": [], \"looks_llm_generated\": \"uncertain\", \"llm_generation_indicators\": [], \"code_copy_indications\": [], \"notes\": \"\"}' > \"$student/report.json\"\n",
         encoding="utf-8",
@@ -141,8 +146,13 @@ def test_activation_script_honors_student_order_file(tmp_path: Path) -> None:
     fake_codex = fake_bin / "codex"
     fake_codex.write_text(
         "#!/usr/bin/env bash\n"
-        "pseudonym=${!#}\n"
-        "pseudonym=${pseudonym#Run submission assessment for }\n"
+        "prompt=${!#}\n"
+        "case \"$prompt\" in\n"
+        "  \"Analyze assignment requirements\")\n"
+        "    printf '%s\\n' '{\"schema_version\": 1, \"requirements\": [{\"id\": \"task-001\", \"description\": \"Implement the synthetic task by the behavior it asks for.\", \"source_reference\": \"task_extracted.txt line 1\"}], \"notes\": \"\"}' > task_requirements.json\n"
+        "    exit 0 ;;\n"
+        "esac\n"
+        "pseudonym=${prompt#Run submission assessment for }\n"
         "mkdir -p \"$pseudonym\"\n"
         "printf '%s\\n' \"{\\\"pseudonym\\\": \\\"$pseudonym\\\", \\\"assignment_submitted\\\": true, \\\"all_tasks_implemented\\\": true, \\\"task_details\\\": [], \\\"looks_llm_generated\\\": \\\"uncertain\\\", \\\"llm_generation_indicators\\\": [], \\\"code_copy_indications\\\": [], \\\"notes\\\": \\\"\\\"}\" > \"$pseudonym/report.json\"\n",
         encoding="utf-8",

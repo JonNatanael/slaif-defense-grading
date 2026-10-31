@@ -134,7 +134,16 @@ def read_student_outputs_index(path: Path) -> Dict[str, str]:
 # predates resumable runs and has no per-student outcome or skipped/generated
 # aggregates; version 2 adds them. Both remain finalizable.
 PROCESSING_STATS_SCHEMA_VERSIONS = (1, 2)
-PROCESS_OUTCOMES = ("agent_success", "agent_failed", "skipped_valid_report", "generated_unresolved")
+# "skipped_prerequisite_failed" was added with the one-time shared
+# assignment-analysis prerequisite; older statistics files simply do not use it.
+PROCESS_OUTCOMES = (
+    "agent_success",
+    "agent_failed",
+    "skipped_valid_report",
+    "generated_unresolved",
+    "skipped_prerequisite_failed",
+)
+ASSIGNMENT_ANALYSIS_OUTCOMES = ("reused", "generated", "failed", "skipped")
 
 
 # The final overview is a quick glance rendered as a single table, so keep
@@ -257,6 +266,20 @@ def load_processing_stats(path: Path) -> Tuple[Optional[Dict[str, object]], Opti
             return None, f"{PROCESSING_STATS_JSON} students entry is missing field(s): {', '.join(row_missing)}"
         if schema_version == 2 and row.get("outcome") not in PROCESS_OUTCOMES:
             return None, f"{PROCESSING_STATS_JSON} students entry {row.get('pseudonym')!r} has an unknown outcome"
+    assignment_analysis = data.get("assignment_analysis")
+    if assignment_analysis is not None:
+        if not isinstance(assignment_analysis, dict):
+            return None, f"{PROCESSING_STATS_JSON} field 'assignment_analysis' must be an object"
+        if assignment_analysis.get("outcome") not in ASSIGNMENT_ANALYSIS_OUTCOMES:
+            return None, f"{PROCESSING_STATS_JSON} field 'assignment_analysis' has an unknown outcome"
+        duration = assignment_analysis.get("duration_seconds")
+        if not isinstance(duration, (int, float)) or isinstance(duration, bool) or duration < 0:
+            return None, f"{PROCESSING_STATS_JSON} field 'assignment_analysis.duration_seconds' must be a nonnegative number"
+        exit_code = assignment_analysis.get("exit_code")
+        if exit_code is not None and (not isinstance(exit_code, int) or isinstance(exit_code, bool)):
+            return None, f"{PROCESSING_STATS_JSON} field 'assignment_analysis.exit_code' must be an integer or null"
+        if not isinstance(assignment_analysis.get("extraction_warnings"), bool):
+            return None, f"{PROCESSING_STATS_JSON} field 'assignment_analysis.extraction_warnings' must be a boolean"
     return data, None
 
 
@@ -266,6 +289,18 @@ def format_seconds(value: object) -> str:
     except (TypeError, ValueError):
         return "Unknown"
     return f"{number:.3f}".rstrip("0").rstrip(".") + " seconds"
+
+
+def format_assignment_analysis(assignment_analysis: Dict[str, object]) -> str:
+    """Render the one-time assignment-analysis attempt from processing stats."""
+    duration = format_seconds(assignment_analysis.get("duration_seconds"))
+    exit_code = assignment_analysis.get("exit_code")
+    exit_text = "not invoked" if exit_code is None else f"exit code {exit_code}"
+    warnings_text = "yes" if assignment_analysis.get("extraction_warnings") else "no"
+    return (
+        f"- Assignment analysis (one-time shared prerequisite): {assignment_analysis.get('outcome')} "
+        f"({duration}, {exit_text}, extraction warnings: {warnings_text})"
+    )
 
 
 def write_named_student_output(source: Path, target: Path, student: FinalizeStudent) -> None:
@@ -337,6 +372,11 @@ def write_finalize_report(
         lines.extend(
             [
                 f"- Run status: {processing_stats['run_status']}",
+                *(
+                    [format_assignment_analysis(processing_stats["assignment_analysis"])]
+                    if isinstance(processing_stats.get("assignment_analysis"), dict)
+                    else []
+                ),
                 f"- Planned students: {processing_stats['planned_students']}",
                 (
                     f"- Processed students in this invocation: {processing_stats['processed_students']}"

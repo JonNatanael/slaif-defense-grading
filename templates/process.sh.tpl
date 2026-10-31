@@ -23,6 +23,17 @@ if [[ $# -eq 1 ]]; then
     PROCESS_FORCE=1
 fi
 
+# Shared one-time assignment prerequisite (generated locally by prepare and,
+# when needed, exactly once by the assignment-analysis agent command below).
+ASSIGNMENT_REQUIREMENTS_FILE="task_requirements.json"
+PROCESS_EXTRACTION_WARNINGS=__EXTRACTION_WARNINGS__
+PROCESS_PREREQUISITE_FAILED=0
+PROCESS_ASSIGNMENT_OUTCOME=""
+PROCESS_ASSIGNMENT_DURATION=0
+PROCESS_ASSIGNMENT_EXIT_CODE=""
+# ASSIGNMENT_AGENT_COMMAND
+# RESOLVED_PSEUDONYMS
+
 PROCESS_STARTED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 PROCESS_ENDED_AT=""
 PROCESS_START_SECONDS=$SECONDS
@@ -69,6 +80,15 @@ write_processing_stats() {
         else
             printf '  "ended_at": null,\n'
         fi
+        if [[ -n "$PROCESS_ASSIGNMENT_OUTCOME" ]]; then
+            if [[ -n "$PROCESS_ASSIGNMENT_EXIT_CODE" ]]; then
+                printf '  "assignment_analysis": {"outcome": "%s", "duration_seconds": %d, "exit_code": %d, "extraction_warnings": %s},\n' \
+                    "$PROCESS_ASSIGNMENT_OUTCOME" "$PROCESS_ASSIGNMENT_DURATION" "$PROCESS_ASSIGNMENT_EXIT_CODE" "$PROCESS_EXTRACTION_WARNINGS"
+            else
+                printf '  "assignment_analysis": {"outcome": "%s", "duration_seconds": %d, "exit_code": null, "extraction_warnings": %s},\n' \
+                    "$PROCESS_ASSIGNMENT_OUTCOME" "$PROCESS_ASSIGNMENT_DURATION" "$PROCESS_EXTRACTION_WARNINGS"
+            fi
+        fi
         printf '  "planned_students": %d,\n' "$PROCESS_PLANNED_STUDENTS"
         printf '  "processed_students": %d,\n' "$processed_count"
         printf '  "successful_students": %d,\n' "$success_count"
@@ -112,6 +132,12 @@ validate_report() {
     python3 report_validator.py "$pseudonym" "$report_path"
 }
 
+validate_requirements() {
+    local path=$1
+    [[ -f "$path" ]] || return 1
+    python3 task_requirements_validator.py "$path"
+}
+
 generate_unresolved_report() {
     local pseudonym=$1
     local report_path="$pseudonym/report.json"
@@ -149,6 +175,75 @@ PY
     return 0
 }
 
+run_assignment_analysis() {
+    # One-time shared prerequisite: every student agent reuses
+    # task_requirements.json instead of re-parsing the assignment. It is
+    # invoked at most once per run, reused when already valid, and skipped
+    # entirely when no student needs an agent invocation (no resolved
+    # students, or every resolved student already has a valid report).
+    local start_seconds=$SECONDS
+    local resolved_count=${#PROCESS_RESOLVED_PSEUDONYMS[@]}
+    local needs_agent=0
+    local index
+    local agent_exit_code=0
+    local validation_exit_code=0
+
+    PROCESS_ASSIGNMENT_DURATION=0
+    PROCESS_ASSIGNMENT_EXIT_CODE=""
+
+    if ((resolved_count == 0)); then
+        PROCESS_ASSIGNMENT_OUTCOME="skipped"
+        return 0
+    fi
+
+    for ((index = 0; index < resolved_count; index++)); do
+        local pseudonym="${PROCESS_RESOLVED_PSEUDONYMS[index]}"
+        if [[ "$PROCESS_FORCE" -eq 0 ]] && validate_report "$pseudonym" "$pseudonym/report.json"; then
+            continue
+        fi
+        needs_agent=1
+        break
+    done
+    if ((needs_agent == 0)); then
+        PROCESS_ASSIGNMENT_OUTCOME="skipped"
+        return 0
+    fi
+
+    if [[ "$PROCESS_FORCE" -eq 0 ]] && validate_requirements "$ASSIGNMENT_REQUIREMENTS_FILE"; then
+        PROCESS_ASSIGNMENT_OUTCOME="reused"
+        return 0
+    fi
+
+    if "${ASSIGNMENT_AGENT_COMMAND[@]}"; then
+        agent_exit_code=0
+    else
+        agent_exit_code=$?
+    fi
+    if validate_requirements "$ASSIGNMENT_REQUIREMENTS_FILE"; then
+        validation_exit_code=0
+    else
+        validation_exit_code=$?
+    fi
+
+    PROCESS_ASSIGNMENT_DURATION=$((SECONDS - start_seconds))
+    if ((agent_exit_code == 0)) && ((validation_exit_code == 0)); then
+        PROCESS_ASSIGNMENT_OUTCOME="generated"
+        PROCESS_ASSIGNMENT_EXIT_CODE=0
+    else
+        if ((agent_exit_code != 0)); then
+            echo "ERROR: assignment analysis agent invocation failed (exit code $agent_exit_code)" >&2
+            PROCESS_ASSIGNMENT_EXIT_CODE=$agent_exit_code
+        else
+            # The agent itself exited 0, but the shared artifact is missing or
+            # invalid; record a failure code so statistics are unambiguous.
+            echo "ERROR: assignment analysis finished, but $ASSIGNMENT_REQUIREMENTS_FILE is missing or invalid" >&2
+            PROCESS_ASSIGNMENT_EXIT_CODE=1
+        fi
+        PROCESS_ASSIGNMENT_OUTCOME="failed"
+    fi
+    return 0
+}
+
 process_one_student() {
     local pseudonym=$1
     local status=$2
@@ -173,6 +268,14 @@ process_one_student() {
 
     if [[ "$PROCESS_FORCE" -eq 0 ]] && validate_report "$pseudonym" "$report_path"; then
         PROCESS_LAST_OUTCOME="skipped_valid_report"
+        return 0
+    fi
+
+    if [[ "$PROCESS_PREREQUISITE_FAILED" -eq 1 ]]; then
+        # Never silently process matched students without the shared
+        # assignment prerequisite; the prerequisite failure is already
+        # recorded in the statistics.
+        PROCESS_LAST_OUTCOME="skipped_prerequisite_failed"
         return 0
     fi
 
@@ -225,7 +328,17 @@ run_planned_student() {
 trap 'finish_processing_stats' EXIT
 write_processing_stats
 
+run_assignment_analysis
+if [[ "$PROCESS_ASSIGNMENT_OUTCOME" == "failed" ]]; then
+    PROCESS_PREREQUISITE_FAILED=1
+    echo "ERROR: shared assignment analysis failed; matched students will not be processed without a valid $ASSIGNMENT_REQUIREMENTS_FILE" >&2
+fi
+
 # PHASE2_COMMANDS
+
+if [[ "$PROCESS_PREREQUISITE_FAILED" -eq 1 ]]; then
+    PROCESS_RUN_STATUS="failed"
+fi
 
 if [[ "$PROCESS_RUN_STATUS" == "running" ]]; then
     PROCESS_RUN_STATUS="completed"

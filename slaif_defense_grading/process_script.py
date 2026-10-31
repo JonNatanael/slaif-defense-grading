@@ -30,10 +30,19 @@ def render_process_script(
     students: Sequence[ProcessStudent],
     codex_profile: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
+    extraction_warnings: bool = False,
 ) -> None:
     template = template_path.read_text(encoding="utf-8")
     profile_flag = f"-p {codex_profile} " if codex_profile else ""
     effort_flag = f"-c model_reasoning_effort={reasoning_effort} " if reasoning_effort else ""
+
+    resolved_pseudonyms = [student.pseudonym for student in students if student.status == ProcessStatus.RESOLVED]
+    assignment_agent_command = (
+        "ASSIGNMENT_AGENT_COMMAND=("
+        f"codex {profile_flag}{effort_flag}--ask-for-approval never -s workspace-write "
+        'exec --skip-git-repo-check "Analyze assignment requirements")'
+    )
+    resolved_array = "PROCESS_RESOLVED_PSEUDONYMS=(" + " ".join(f'"{p}"' for p in resolved_pseudonyms) + ")"
 
     phase2_commands: List[str] = []
     for student in students:
@@ -53,8 +62,17 @@ def render_process_script(
         raise ValueError(
             f"process script template is missing __PLANNED_STUDENT_COUNT__ placeholder: {template_path}"
         )
+    if "# ASSIGNMENT_AGENT_COMMAND" not in template:
+        raise ValueError(f"process script template is missing # ASSIGNMENT_AGENT_COMMAND placeholder: {template_path}")
+    if "__EXTRACTION_WARNINGS__" not in template:
+        raise ValueError(f"process script template is missing __EXTRACTION_WARNINGS__ placeholder: {template_path}")
+    if "# RESOLVED_PSEUDONYMS" not in template:
+        raise ValueError(f"process script template is missing # RESOLVED_PSEUDONYMS placeholder: {template_path}")
 
     rendered = template.replace("__PLANNED_STUDENT_COUNT__", str(len(students)))
+    rendered = rendered.replace("__EXTRACTION_WARNINGS__", "true" if extraction_warnings else "false")
+    rendered = rendered.replace("# ASSIGNMENT_AGENT_COMMAND", assignment_agent_command)
+    rendered = rendered.replace("# RESOLVED_PSEUDONYMS", resolved_array)
     rendered = rendered.replace("# PHASE2_COMMANDS", phase2_text)
     output_path.write_text(rendered, encoding="utf-8", newline="\n")
     os.chmod(output_path, 0o755)

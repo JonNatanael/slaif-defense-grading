@@ -21,9 +21,12 @@ from .core import (
 from .io_utils import decode_text_file, detect_bom_encoding, eprint, list_document_files, list_readable_files, unique_path
 from .models import DOCUMENT_SUFFIXES, READABLE_SUFFIXES
 from . import report_validation
+from . import task_requirements
 from .process_script import ProcessStatus, ProcessStudent, render_process_script
+from .task_extract import TaskExtractionResult, WORKSPACE_EXTRACTED_NAME, extract_task_text
 
 WORKSPACE_VALIDATOR_NAME = "report_validator.py"
+WORKSPACE_REQUIREMENTS_VALIDATOR_NAME = "task_requirements_validator.py"
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,7 @@ class PrepareResult:
     include_opaque_documents: bool
     student_outputs_dir: Path
     student_outputs_index: Path
+    task_extraction: TaskExtractionResult
 
 
 @dataclass
@@ -553,9 +557,22 @@ def write_preprocessing_report(
         f"- Matched students: {result.matched_count}",
         f"- Students without submissions: {result.missing_count}",
         "",
-        "## Unmatched LMS Folders",
+        "## Assignment Extraction",
         "",
     ]
+    if result.task_extraction.written:
+        lines.append(f"- Method: {result.task_extraction.method}")
+        lines.append(
+            "- The canonical assignment file was preserved untouched; its plain-text version was written "
+            "to the workspace as `task_extracted.txt` for the one-time assignment-requirements analysis."
+        )
+        for warning in result.task_extraction.warnings:
+            lines.append(f"- Warning: {warning}")
+    else:
+        lines.append("- No usable local text extraction was produced; the original assignment file remains the assignment source in the workspace.")
+        for warning in result.task_extraction.warnings:
+            lines.append(f"- Warning: {warning}")
+    lines.extend(["", "## Unmatched LMS Folders", ""])
 
     if result.unmatched_folders:
         lines.extend(f"- `{folder}`" for folder in sorted(result.unmatched_folders, key=str.casefold))
@@ -729,6 +746,17 @@ def prepare_workspace(
     shutil.copy2(workspace_agents_template, workspace / "AGENTS.md")
     shutil.copy2(report_template, workspace / report_template.name)
     shutil.copy2(task_file, task_workspace_path)
+    # Deterministic local text extraction of the assignment for the one-time
+    # assignment-requirements analysis. The canonical task.* file above is
+    # preserved untouched; task_extracted.txt is written only when extraction
+    # produced a usable result, otherwise the warnings are recorded privately.
+    task_extraction = extract_task_text(task_file, workspace / WORKSPACE_EXTRACTED_NAME)
+    for warning in task_extraction.warnings:
+        eprint(f"Warning: {warning}")
+    # The task-requirements validator is copied verbatim into the workspace so
+    # the generated process.sh can validate task_requirements.json standalone,
+    # without the source repository being importable at runtime.
+    shutil.copy2(Path(task_requirements.__file__), workspace / WORKSPACE_REQUIREMENTS_VALIDATOR_NAME)
 
     matched_students: Dict[int, RosterStudent] = {}
     unmatched_folders: List[str] = []
@@ -813,6 +841,7 @@ def prepare_workspace(
         ],
         codex_profile=codex_profile,
         reasoning_effort=reasoning_effort,
+        extraction_warnings=bool(task_extraction.warnings),
     )
     student_outputs_dir, student_outputs_index = copy_private_student_outputs(
         students,
@@ -833,6 +862,7 @@ def prepare_workspace(
         include_opaque_documents=include_opaque_documents,
         student_outputs_dir=student_outputs_dir,
         student_outputs_index=student_outputs_index,
+        task_extraction=task_extraction,
     )
     write_preprocessing_report(private_output, result)
     private_identifiers = [entry.original_folder for entry in manifest_entries]

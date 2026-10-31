@@ -1,9 +1,12 @@
 """Part 1 performance work: resumable process.sh, local unresolved reports,
 shared report validation, processing statistics v2, and wrapper effort passthrough.
 
-Only synthetic data is used. The fake `codex` executable records every
-invocation (to $CODEX_LOG) and writes a structurally valid report for the
-target pseudonym unless its name is listed in $FAIL_FOR.
+Only synthetic data is used. The fake `codex` executable handles the
+one-time "Analyze assignment requirements" command by writing a valid
+task_requirements.json (unless $FAIL_ANALYSIS makes it exit nonzero or
+$BAD_ANALYSIS makes it write invalid JSON). For student assessment commands
+it records the invocation (to $CODEX_LOG) and writes a structurally valid
+report for the target pseudonym unless its name is listed in $FAIL_FOR.
 """
 
 from __future__ import annotations
@@ -40,8 +43,16 @@ def install_fake_codex(tmp_path: Path) -> tuple[Path, Path]:
     codex = fake_bin / "codex"
     codex.write_text(
         "#!/usr/bin/env bash\n"
-        "student=${!#}\n"
-        "student=${student#Run submission assessment for }\n"
+        "prompt=${!#}\n"
+        "case \"$prompt\" in\n"
+        "  \"Analyze assignment requirements\")\n"
+        "    if [[ -n \"${ANALYSIS_LOG:-}\" ]]; then printf '%s\\n' \"Analyze assignment requirements\" >> \"$ANALYSIS_LOG\"; fi\n"
+        "    if [[ -n \"${FAIL_ANALYSIS:-}\" ]]; then exit 1; fi\n"
+        "    if [[ -n \"${BAD_ANALYSIS:-}\" ]]; then printf 'not valid json\\n' > task_requirements.json; exit 0; fi\n"
+        "    printf '%s\\n' '{\"schema_version\": 1, \"requirements\": [{\"id\": \"task-001\", \"description\": \"Implement the synthetic task by the behavior it asks for.\", \"source_reference\": \"task_extracted.txt line 1\"}], \"notes\": \"\"}' > task_requirements.json\n"
+        "    exit 0 ;;\n"
+        "esac\n"
+        "student=${prompt#Run submission assessment for }\n"
         "printf '%s\\n' \"$student\" >> \"$CODEX_LOG\"\n"
         "case \" $FAIL_FOR \" in\n"
         "  *\" $student \"*) exit 1 ;;\n"
@@ -494,8 +505,13 @@ def install_fake_codex_for_activation(tmp_path: Path) -> Path:
     fake_codex = fake_bin / "codex"
     fake_codex.write_text(
         "#!/usr/bin/env bash\n"
-        "pseudonym=${!#}\n"
-        "pseudonym=${pseudonym#Run submission assessment for }\n"
+        "prompt=${!#}\n"
+        "case \"$prompt\" in\n"
+        "  \"Analyze assignment requirements\")\n"
+        "    printf '%s\\n' '{\"schema_version\": 1, \"requirements\": [{\"id\": \"task-001\", \"description\": \"Implement the synthetic task by the behavior it asks for.\", \"source_reference\": \"task_extracted.txt line 1\"}], \"notes\": \"\"}' > task_requirements.json\n"
+        "    exit 0 ;;\n"
+        "esac\n"
+        "pseudonym=${prompt#Run submission assessment for }\n"
         "mkdir -p \"$pseudonym\"\n"
         "printf '%s\\n' \"{\\\"pseudonym\\\": \\\"$pseudonym\\\", \\\"assignment_submitted\\\": true, \\\"all_tasks_implemented\\\": true, \\\"task_details\\\": [], \\\"looks_llm_generated\\\": \\\"uncertain\\\", \\\"llm_generation_indicators\\\": [], \\\"code_copy_indications\\\": [], \\\"notes\\\": \\\"\\\"}\" > \"$pseudonym/report.json\"\n",
         encoding="utf-8",

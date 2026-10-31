@@ -68,7 +68,7 @@ This workflow creates targeted oral-verification questions from the submitted ma
 The supported workflow is:
 
 1. `prepare`: run local preprocessing and create a pseudonymized agent workspace.
-2. Run `process.sh`: ask the agent to write one pseudonymized submission-assessment report (`report.json`) per student, skipping students that already have a valid report and generating neutral local reports for students without submissions.
+2. Run `process.sh`: first ensure the one-time shared `task_requirements.json` assignment analysis exists (reusing it when valid, invoking the assignment-analysis agent at most once), then ask the agent to write one pseudonymized submission-assessment report (`report.json`) per student, skipping students that already have a valid report and generating neutral local reports for students without submissions.
 3. `finalize`: locally map pseudonymized reports back to private named instructor outputs, rendering a human-readable `report.pdf` next to the machine-readable `report.json`, plus a single-table `final_report.pdf` overview of all students.
 
 Prepare the pseudonymized workspace:
@@ -103,12 +103,14 @@ python3 slaif-defense-grading.py prepare \
 - writes private `pseudonym_map.csv` outside the workspace;
 - writes private `preprocessing_report.md` outside the workspace;
 - copies the assignment into the workspace with a canonical `task.*` filename, such as `task.tex` or `task.pdf`;
+- extracts the assignment text locally and deterministically into `task_extracted.txt` (readable formats are decoded directly; PDFs via the `pypdf` dependency or a local `pdftotext` executable; no remote service, no OCR), preserving the canonical `task.*` untouched;
+- copies the standalone `task_requirements_validator.py` helper into the workspace so `process.sh` can validate the shared requirements file without the source repository;
 - generates pseudonymized `students.csv`;
 - generates pseudonymized `associations.csv`;
 - copies `templates/workspace/AGENTS.md` into the workspace as `AGENTS.md`;
 - copies `templates/workspace/report_template.json` (the mandatory report schema) into the workspace;
 - copies the standalone `report_validator.py` helper into the workspace so `process.sh` can validate reports without the source repository;
-- renders executable `process.sh`;
+- renders executable `process.sh` (including the one-time assignment-analysis step);
 - writes pseudonymized student-output copies for instructor/student review;
 - writes private `student_outputs_index.csv`;
 - excludes opaque documents by default.
@@ -155,6 +157,8 @@ lab-agent/
   report_validator.py
   students.csv
   task.pdf
+  task_extracted.txt        # local text extraction of the assignment (when extraction succeeds)
+  task_requirements.json    # created by process.sh's one-time assignment analysis
 ```
 
 Private instructor-only output:
@@ -181,6 +185,8 @@ Student,0002,Student 0002
 
 The instructor assignment file is copied under a canonical non-private workspace name. For example, `assignment.pdf` becomes `task.pdf`, `task.tex` remains `task.tex`, and other suffixes become `task<suffix>`. The original assignment basename is not preserved.
 
+In addition, `prepare` writes `task_extracted.txt`, a plain-text version of the assignment extracted locally and deterministically during preprocessing. Readable text formats are decoded with the repository's existing safe text decoding and line-ending normalization. PDFs are extracted with the `pypdf` dependency (or, if it is unavailable, with a locally detected `pdftotext` executable from poppler-utils). No remote service is contacted and no OCR is performed, so a scanned or image-only PDF cannot be extracted: in that case no `task_extracted.txt` is written, a warning is recorded in the private `preprocessing_report.md` (under "Assignment Extraction") and in the rendered `process.sh` statistics flag, and the canonical `task.*` file remains the assignment source. An empty or implausibly small PDF extraction is treated the same way - the tool never writes a misleading empty extraction artifact. Extraction is only a convenience for the agent: it does not grade anything and does not change what the human instructor must review.
+
 `report_template.json` is the mandatory schema for every generated `report.json`. Each report assesses, for one student: whether the assignment was submitted, whether all required tasks are implemented (by what they do, not by function names), whether the code looks LLM-generated, and whether there are indications of copying code from another student (with the other student's pseudonym and line numbers in both submissions). The generated workspace `AGENTS.md` instructs the later assessment agent to follow this schema exactly.
 
 `student_outputs/` contains pseudonymized copies of the same concatenated `Student_XXXX.txt` files that the agent sees. These files are intended as per-student review material that an instructor can retrieve and show individually. The private `student_outputs_index.csv` and `pseudonym_map.csv` identify which file belongs to which real student and must not be shared wholesale with students.
@@ -194,6 +200,7 @@ Before running `process.sh`, inspect:
 - `workspace/lab-agent/` and confirm generated filenames are pseudonymized;
 - `workspace/lab-agent/students.csv` and `workspace/lab-agent/associations.csv`;
 - `workspace/lab-agent/report_template.json`;
+- `workspace/lab-agent/task_extracted.txt`, when present;
 - `workspace/lab-private/preprocessing_report.md`.
 
 The agent-facing workspace should contain no real names, emails, student IDs, or original LMS folder names. The private report may contain real matching details and must remain local.
@@ -215,11 +222,13 @@ run_planned_student "Student 0001" resolved codex -p qwen-neumann --ask-for-appr
 
 Resumability is the default. Before invoking Codex for a student with associated submissions, `process.sh` validates the existing `<pseudonym>/report.json` with the workspace `report_validator.py` helper (the same structural contract `finalize` uses). A valid report is skipped without any Codex call; a report that is missing, malformed, structurally invalid, or belongs to another pseudonym is reprocessed. Students with no associated submissions are marked `unresolved` in `associations.csv` and receive a deterministic, neutral local report generated by `process.sh` itself, with no Codex call and no implication of misconduct. Rerunning `./process.sh` after a partial or failed run therefore only redoes the students that still lack a valid report.
 
-Run `./process.sh --force` to regenerate reports even when a valid one already exists. `--force` still never invokes Codex for unresolved students.
+Run `./process.sh --force` to regenerate reports even when a valid one already exists. `--force` also regenerates the shared `task_requirements.json` file even when a valid one already exists, and still never invokes Codex for unresolved students.
 
 One failing student does not stop the later students: every planned student is attempted in order, and `process.sh` exits nonzero only after all planned students have been handled, if any attempted agent invocation failed.
 
-`process.sh` records its work in `processing_stats.json` (schema version 2), creating it at the start of each run and updating it atomically after every handled student, so a failed or interrupted run retains the latest completed update. It records only pseudonyms, per-student outcome (`agent_success`, `agent_failed`, `skipped_valid_report`, or `generated_unresolved`), elapsed seconds and exit codes, plus planned/processed/success/failed counts, aggregate skipped and locally-generated counts, run status, total elapsed time, and average time per processed student. A resumed run describes the work performed in that invocation: reused reports are counted as skipped, not as newly produced. `finalize` accepts statistics from both the current version 2 and the earlier version 1 format.
+Before any student that needs an agent invocation is processed, `process.sh` validates the shared `task_requirements.json` requirements file with the workspace `task_requirements_validator.py` helper. If the file is valid it is reused (`reused`); if it is missing or invalid, `process.sh` invokes Codex exactly once with the assignment-analysis command (`Analyze assignment requirements`), which reads only the assignment files, writes only `task_requirements.json`, and is validated before any student is processed (`generated`). The analysis is skipped entirely (`skipped`) when no student needs an agent invocation - for example when every student is unresolved or every student already has a valid report - so resumed runs never repeat it. If the analysis fails or produces invalid output, matched students without a valid report are recorded as `skipped_prerequisite_failed` and are not processed without the shared prerequisite; already valid student reports are preserved, unresolved students still receive their neutral local reports, and `process.sh` exits nonzero. The student assessment agents use `task_requirements.json` as their normal requirements source, consult the canonical `task.*` only when the structured artifact is ambiguous, and never treat the shared artifacts as submissions or modify them.
+
+`process.sh` records its work in `processing_stats.json` (schema version 2), creating it at the start of each run and updating it atomically after every handled student, so a failed or interrupted run retains the latest completed update. It records only pseudonyms, per-student outcome (`agent_success`, `agent_failed`, `skipped_valid_report`, `generated_unresolved`, or `skipped_prerequisite_failed`), elapsed seconds and exit codes, plus planned/processed/success/failed counts, aggregate skipped and locally-generated counts, run status, total elapsed time, and average time per processed student. The one-time assignment analysis is recorded separately in an `assignment_analysis` block with its outcome (`reused`, `generated`, `failed`, or `skipped`), duration and exit code when an agent was invoked, and whether local extraction warnings were present. A resumed run describes the work performed in that invocation: reused reports are counted as skipped, not as newly produced. `finalize` accepts statistics from both the current version 2 and the earlier version 1 format, with or without the `assignment_analysis` block.
 
 ### Model Selection
 
@@ -242,7 +251,7 @@ python3 slaif-defense-grading.py finalize \
 
 You can run `finalize` before `process.sh` has finished. Without `--strict`, it produces partial instructor outputs for valid reports already present, records unfinished students in `missing_reports.csv`, and shows `Unknown`/`No report` for them in the overview. It is safe to run the same command again later to refresh the output as more reports arrive. Do not use `--strict` for a partial run.
 
-When `processing_stats.json` is available, the private `final_report.pdf` and `finalize_report.md` include its run status, total and average times, per-student outcomes (version 2 statistics), and a per-student timing list resolved to private student names. Statistics from both the current version 2 and the earlier version 1 format are accepted; missing or malformed statistics are reported as unavailable and do not prevent finalization.
+When `processing_stats.json` is available, the private `final_report.pdf` and `finalize_report.md` include its run status, the one-time assignment-analysis outcome when recorded, total and average times, per-student outcomes (version 2 statistics), and a per-student timing list resolved to private student names. Statistics from both the current version 2 and the earlier version 1 format are accepted; missing or malformed statistics are reported as unavailable and do not prevent finalization.
 
 Final output is private/local and may contain real student identities:
 
@@ -283,7 +292,7 @@ There are two different `AGENTS.md` files:
 - Root `AGENTS.md` is for coding agents modifying this repository.
 - Generated workspace `AGENTS.md` is copied from `templates/workspace/AGENTS.md` and is for the later oral-verification/grading agent inside the pseudonymized workspace.
 
-Preprocessing is not an agent task. The later agent should use `students.csv`, `associations.csv`, and the generated assignment file (`task.tex`, `task.pdf`, or another `task.*`), and should treat only files listed in `associations.csv` as student submissions.
+Preprocessing is not an agent task. The later agent should use `students.csv`, `associations.csv`, the generated assignment file (`task.tex`, `task.pdf`, or another `task.*`), and the shared `task_extracted.txt` and `task_requirements.json` artifacts, and should treat only files listed in `associations.csv` as student submissions.
 
 There is no `.slaif_prompts/` directory.
 
@@ -363,7 +372,9 @@ The end-to-end messy fixture covers:
 - weird/non-ASCII filename;
 - fake real identifiers requiring scrubbing;
 - default-excluded opaque PDF;
-- opt-in opaque document behavior.
+- opt-in opaque document behavior;
+- local deterministic assignment extraction (`task_extracted.txt`) with honest failure for text-less PDFs;
+- one-time shared `task_requirements.json` analysis (validation, reuse, exactly-once generation, failure isolation, skip on resumed/unresolved-only runs).
 
 Run tests with:
 
@@ -389,6 +400,8 @@ slaif_defense_grading/
   models.py
   prepare.py
   process_script.py
+  task_extract.py
+  task_requirements.py
 
 templates/
   process.sh.tpl

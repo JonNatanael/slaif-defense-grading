@@ -338,6 +338,13 @@ def render_final_report_pdf(
         if processing_stats.get("schema_version", 1) == 2:
             summary += f"\nSkipped students (valid existing report reused): {processing_stats.get('skipped_students', 'Unknown')}"
             summary += f"\nLocally generated unresolved reports: {processing_stats.get('generated_unresolved_students', 'Unknown')}"
+        assignment_analysis = processing_stats.get("assignment_analysis")
+        if isinstance(assignment_analysis, dict):
+            exit_code = assignment_analysis.get("exit_code")
+            exit_text = "not invoked" if exit_code is None else f"exit code {exit_code}"
+            summary += (
+                f"\nAssignment analysis (one-time shared prerequisite): {assignment_analysis.get('outcome')} ({exit_text})"
+            )
         pdf.multi_cell(0, 5, safe(summary), new_x="LMARGIN", new_y="NEXT")
 
         student_rows = processing_stats.get("students")

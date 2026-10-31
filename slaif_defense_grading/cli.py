@@ -33,8 +33,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
             Real roster data is read locally from --students-csv. The generated workspace
             receives only pseudonyms, a canonical task.* assignment file, a workspace
             AGENTS.md, a report template, a standalone report_validator.py helper,
+            a locally extracted task_extracted.txt text version of the assignment,
             pseudonymized submission text files, associations.csv, and a locally
-            rendered process.sh. The private pseudonym map,
+            rendered process.sh. The one-time task_requirements.json requirements
+            analysis is generated at most once by process.sh's assignment-analysis
+            command. The private pseudonym map,
             student-output copies, and preprocessing report are written under
             --private-output, outside the workspace.
             """

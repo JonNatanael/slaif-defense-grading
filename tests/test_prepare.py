@@ -914,12 +914,17 @@ def test_prepare_creates_pseudonymized_workspace_and_private_outputs(tmp_path: P
     assert process_sh.stat().st_mode & stat.S_IXUSR
     assert "Phase 1" not in process_text
     assert "cat .slaif_prompts" not in process_text
-    # Only the matched student gets a Codex command; the unmatched student is
-    # handled as an unresolved local neutral report.
+    # The Codex command prefix appears exactly twice: once in the one-time
+    # assignment-analysis command and once for the matched student. The
+    # unmatched student is handled as an unresolved local neutral report.
     default_codex_command = (
         f"codex -p {DEFAULT_CODEX_PROFILE} -c model_reasoning_effort=medium --ask-for-approval never -s workspace-write exec --skip-git-repo-check"
     )
-    assert process_text.count(default_codex_command) == 1
+    assert process_text.count(default_codex_command) == 2
+    assert 'ASSIGNMENT_AGENT_COMMAND=(codex -p ' in process_text
+    assert '"Analyze assignment requirements"' in process_text
+    assert 'PROCESS_RESOLVED_PSEUDONYMS=("Student 0001")' in process_text
+    assert 'PROCESS_EXTRACTION_WARNINGS=false' in process_text
     assert 'run_planned_student "Student 0001" resolved codex' in process_text
     assert 'run_planned_student "Student 0002" unresolved' in process_text
     assert '"Run submission assessment for Student 0001"' in process_text
@@ -1075,8 +1080,13 @@ def test_generated_process_script_writes_timing_statistics(tmp_path: Path) -> No
     fake_codex = fake_bin / "codex"
     fake_codex.write_text(
         "#!/bin/bash\n"
-        "student=${!#}\n"
-        "student=${student#Run submission assessment for }\n"
+        "prompt=${!#}\n"
+        "case \"$prompt\" in\n"
+        "  \"Analyze assignment requirements\")\n"
+        "    printf '%s\\n' '{\"schema_version\": 1, \"requirements\": [{\"id\": \"task-001\", \"description\": \"Implement the synthetic task by the behavior it asks for.\", \"source_reference\": \"task_extracted.txt line 1\"}], \"notes\": \"\"}' > task_requirements.json\n"
+        "    exit 0 ;;\n"
+        "esac\n"
+        "student=${prompt#Run submission assessment for }\n"
         "sleep 1\n"
         "mkdir -p \"$student\"\n"
         "printf '%s\\n' \"{\\\"pseudonym\\\": \\\"$student\\\", \\\"assignment_submitted\\\": true, \\\"all_tasks_implemented\\\": true, \\\"task_details\\\": [], \\\"looks_llm_generated\\\": \\\"uncertain\\\", \\\"llm_generation_indicators\\\": [], \\\"code_copy_indications\\\": [], \\\"notes\\\": \\\"\\\"}\" > \"$student/report.json\"\n",
@@ -1175,7 +1185,9 @@ def test_prepare_codex_profile_none_omits_profile_flag(tmp_path: Path) -> None:
     process_text = (workspace / "process.sh").read_text(encoding="utf-8")
     assert "codex -p " not in process_text
     assert "-c model_reasoning_effort" not in process_text
-    assert process_text.count("codex --ask-for-approval never -s workspace-write exec --skip-git-repo-check") == 1
+    # The command appears for both the one-time assignment-analysis call and
+    # the matched student assessment.
+    assert process_text.count("codex --ask-for-approval never -s workspace-write exec --skip-git-repo-check") == 2
     assert "Ana Novak" not in process_text
     assert "Boris Kovac" not in process_text
 
@@ -1188,9 +1200,11 @@ def test_prepare_codex_reasoning_effort_low_is_rendered(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     process_text = (workspace / "process.sh").read_text(encoding="utf-8")
+    # The command appears for both the one-time assignment-analysis call and
+    # the matched student assessment.
     assert process_text.count(
         f"codex -p {DEFAULT_CODEX_PROFILE} -c model_reasoning_effort=low --ask-for-approval never -s workspace-write exec --skip-git-repo-check"
-    ) == 1
+    ) == 2
     assert "Ana Novak" not in process_text
     assert "Boris Kovac" not in process_text
 
