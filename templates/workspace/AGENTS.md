@@ -29,6 +29,7 @@ Do not treat these files or directories as submissions:
 - `task.*`
 - `report_template.json`
 - `process.sh`
+- `report_validator.py`
 - `processing_stats.json` (when present; it is maintained by `process.sh`)
 - already generated report folders
 
@@ -41,6 +42,8 @@ Run submission assessment for Student 0001
 ```
 
 If the command does not identify exactly one pseudonymized student from `students.csv`, refuse and ask for a precise pseudonymized full name.
+
+`process.sh` only invokes you for students with associated submissions. Students with no associated files are `unresolved` in `associations.csv`; their neutral reports are generated deterministically and locally by `process.sh` itself, without any agent invocation. If you are ever invoked directly for such a student, still create the neutral report described under Output.
 
 ## Association Rules
 
@@ -97,6 +100,7 @@ Do not modify preprocessing files:
 - `task.*`
 - `report_template.json`
 - `process.sh`
+- `report_validator.py`
 - `processing_stats.json` (when present; it is maintained by `process.sh`)
 
 Only create or update the target student's report folder and files needed for that report.

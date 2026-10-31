@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from .pdf_report import FINAL_REPORT_CSV_COLUMNS, render_assessment_pdf, render_final_report_pdf
 from .html_report import FINAL_REPORT_HTML, render_final_report_html
+from .report_validation import validate_report_text
 
 
 @dataclass(frozen=True)
@@ -129,13 +130,11 @@ def read_student_outputs_index(path: Path) -> Dict[str, str]:
     return {row["pseudonym"]: row["student_output_file"] for row in rows if row.get("student_output_file")}
 
 
-REQUIRED_REPORT_KEYS = (
-    "assignment_submitted",
-    "all_tasks_implemented",
-    "looks_llm_generated",
-    "code_copy_indications",
-)
-ALLOWED_LLM_ASSESSMENTS = {"likely", "unlikely", "uncertain"}
+# processing_stats.json schema versions accepted from process.sh. Version 1
+# predates resumable runs and has no per-student outcome or skipped/generated
+# aggregates; version 2 adds them. Both remain finalizable.
+PROCESSING_STATS_SCHEMA_VERSIONS = (1, 2)
+PROCESS_OUTCOMES = ("agent_success", "agent_failed", "skipped_valid_report", "generated_unresolved")
 
 
 # The final overview is a quick glance rendered as a single table, so keep
@@ -193,29 +192,20 @@ def _summary_cells(report_data: Dict[str, object], other_student_names: Dict[str
     }
 
 
-def load_assessment_report(path: Path) -> Tuple[Optional[Dict[str, object]], Optional[str]]:
-    """Load and validate an agent-generated report.json; returns (data, problem)."""
+def load_assessment_report(path: Path, expected_pseudonym: str) -> Tuple[Optional[Dict[str, object]], Optional[str]]:
+    """Load and validate a report.json using the shared validation contract.
+
+    Returns (data, problem). The same rules process.sh uses via the
+    generated report_validator.py helper: valid JSON, the required template
+    keys, a matching pseudonym, and documented types for every field.
+    """
     try:
         raw = path.read_text(encoding="utf-8")
     except OSError as exc:
         return None, f"report.json could not be read: {exc}"
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        return None, f"report.json is not valid JSON: {exc}"
-    if not isinstance(data, dict):
-        return None, "report.json must contain a JSON object"
-    missing = [key for key in REQUIRED_REPORT_KEYS if key not in data]
-    if missing:
-        return None, f"report.json is missing required field(s): {', '.join(missing)}"
-    if not isinstance(data.get("assignment_submitted"), bool):
-        return None, "report.json field 'assignment_submitted' must be a boolean"
-    if data.get("all_tasks_implemented") not in (True, False, "unknown"):
-        return None, "report.json field 'all_tasks_implemented' must be true, false or 'unknown'"
-    if str(data.get("looks_llm_generated") or "").casefold() not in ALLOWED_LLM_ASSESSMENTS:
-        return None, "report.json field 'looks_llm_generated' must be 'likely', 'unlikely' or 'uncertain'"
-    if not isinstance(data.get("code_copy_indications"), list):
-        return None, "report.json field 'code_copy_indications' must be a list"
+    data, problems = validate_report_text(raw, expected_pseudonym)
+    if problems:
+        return None, f"report.json {problems[0]}"
     return data, None
 
 
@@ -232,14 +222,20 @@ def load_processing_stats(path: Path) -> Tuple[Optional[Dict[str, object]], Opti
     if not isinstance(data, dict):
         return None, f"{PROCESSING_STATS_JSON} must contain a JSON object"
 
-    required_numbers = (
+    schema_version = data.get("schema_version", 1)
+    if schema_version not in PROCESSING_STATS_SCHEMA_VERSIONS:
+        return None, f"{PROCESSING_STATS_JSON} has unsupported schema_version: {schema_version!r}"
+
+    required_numbers = [
         "planned_students",
         "processed_students",
         "successful_students",
         "failed_students",
         "total_time_seconds",
         "average_time_seconds",
-    )
+    ]
+    if schema_version == 2:
+        required_numbers.extend(["skipped_students", "generated_unresolved_students"])
     missing = [field for field in ("run_status", "students", *required_numbers) if field not in data]
     if missing:
         return None, f"{PROCESSING_STATS_JSON} is missing required field(s): {', '.join(missing)}"
@@ -250,8 +246,17 @@ def load_processing_stats(path: Path) -> Tuple[Optional[Dict[str, object]], Opti
     ]
     if invalid_numbers:
         return None, f"{PROCESSING_STATS_JSON} has non-numeric field(s): {', '.join(invalid_numbers)}"
-    if not isinstance(data.get("students"), list):
+    student_rows = data.get("students")
+    if not isinstance(student_rows, list):
         return None, f"{PROCESSING_STATS_JSON} field 'students' must be a list"
+    for row in student_rows:
+        if not isinstance(row, dict):
+            return None, f"{PROCESSING_STATS_JSON} students entries must be objects"
+        row_missing = [field for field in ("pseudonym", "duration_seconds", "exit_code") if field not in row]
+        if row_missing:
+            return None, f"{PROCESSING_STATS_JSON} students entry is missing field(s): {', '.join(row_missing)}"
+        if schema_version == 2 and row.get("outcome") not in PROCESS_OUTCOMES:
+            return None, f"{PROCESSING_STATS_JSON} students entry {row.get('pseudonym')!r} has an unknown outcome"
     return data, None
 
 
@@ -328,15 +333,28 @@ def write_finalize_report(
     if processing_stats is None:
         lines.append(f"- Not available: {processing_stats_problem or 'no processing statistics were provided'}")
     else:
+        schema_version = processing_stats.get("schema_version", 1)
         lines.extend(
             [
                 f"- Run status: {processing_stats['run_status']}",
                 f"- Planned students: {processing_stats['planned_students']}",
-                f"- Processed students: {processing_stats['processed_students']}",
+                (
+                    f"- Processed students in this invocation: {processing_stats['processed_students']}"
+                    if schema_version == 2
+                    else f"- Processed students: {processing_stats['processed_students']}"
+                ),
                 f"- Successful students: {processing_stats['successful_students']}",
                 f"- Failed students: {processing_stats['failed_students']}",
                 f"- Total elapsed time: {format_seconds(processing_stats['total_time_seconds'])}",
                 f"- Average time per processed student: {format_seconds(processing_stats['average_time_seconds'])}",
+                *(
+                    [
+                        f"- Skipped students (valid existing report reused, no agent call): {processing_stats['skipped_students']}",
+                        f"- Locally generated unresolved reports (no agent call): {processing_stats['generated_unresolved_students']}",
+                    ]
+                    if schema_version == 2
+                    else []
+                ),
                 "",
                 "### Per-Student Times",
                 "",
@@ -351,9 +369,11 @@ def write_finalize_report(
                 pseudonym = str(raw_row.get("pseudonym") or "Unknown")
                 name = names.get(pseudonym)
                 label = f"`{pseudonym}` / {name}" if name else f"`{pseudonym}`"
+                outcome = raw_row.get("outcome")
+                outcome_text = f", outcome: {outcome}" if outcome else ""
                 lines.append(
                     f"- {label}: {format_seconds(raw_row.get('duration_seconds'))} "
-                    f"(exit code {raw_row.get('exit_code', 'Unknown')})"
+                    f"(exit code {raw_row.get('exit_code', 'Unknown')}{outcome_text})"
                 )
         else:
             lines.append("- None completed yet")
@@ -421,7 +441,7 @@ def finalize_outputs(workspace: Path, private_output: Path, output: Path, strict
         report_json_file = ""
         report_status = "missing"
         if expected_report.exists():
-            report_data, problem = load_assessment_report(expected_report)
+            report_data, problem = load_assessment_report(expected_report, student.pseudonym)
             if problem is None:
                 json_target = instructor_reports_dir / safe_names[student.pseudonym] / "report.json"
                 write_named_report_json(expected_report, json_target)

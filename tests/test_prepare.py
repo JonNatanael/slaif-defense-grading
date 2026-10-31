@@ -843,20 +843,22 @@ def test_finalize_uses_deterministic_safe_paths_for_duplicate_names(tmp_path: Pa
     )
     write_text(private_output / "student_outputs" / "Student_0001.txt", "Student 0001 content\n")
     write_text(private_output / "student_outputs" / "Student_0002.txt", "Student 0002 content\n")
-    valid_report = json.dumps(
-        {
-            "pseudonym": "Student 0001",
-            "assignment_submitted": True,
-            "all_tasks_implemented": True,
-            "task_details": [],
-            "looks_llm_generated": "uncertain",
-            "llm_generation_indicators": [],
-            "code_copy_indications": [],
-            "notes": "",
-        }
-    )
-    write_text(workspace / "Student 0001" / "report.json", valid_report)
-    write_text(workspace / "Student 0002" / "report.json", valid_report)
+    def valid_report_for(pseudonym: str) -> str:
+        return json.dumps(
+            {
+                "pseudonym": pseudonym,
+                "assignment_submitted": True,
+                "all_tasks_implemented": True,
+                "task_details": [],
+                "looks_llm_generated": "uncertain",
+                "llm_generation_indicators": [],
+                "code_copy_indications": [],
+                "notes": "",
+            }
+        )
+
+    write_text(workspace / "Student 0001" / "report.json", valid_report_for("Student 0001"))
+    write_text(workspace / "Student 0002" / "report.json", valid_report_for("Student 0002"))
 
     result = subprocess.run(
         [
@@ -912,16 +914,25 @@ def test_prepare_creates_pseudonymized_workspace_and_private_outputs(tmp_path: P
     assert process_sh.stat().st_mode & stat.S_IXUSR
     assert "Phase 1" not in process_text
     assert "cat .slaif_prompts" not in process_text
+    # Only the matched student gets a Codex command; the unmatched student is
+    # handled as an unresolved local neutral report.
     default_codex_command = (
         f"codex -p {DEFAULT_CODEX_PROFILE} -c model_reasoning_effort=medium --ask-for-approval never -s workspace-write exec --skip-git-repo-check"
     )
-    assert process_text.count(default_codex_command) == 2
-    assert process_text.index("Run submission assessment for Student 0001") < process_text.index(
-        "Run submission assessment for Student 0002"
-    )
+    assert process_text.count(default_codex_command) == 1
+    assert 'run_planned_student "Student 0001" resolved codex' in process_text
+    assert 'run_planned_student "Student 0002" unresolved' in process_text
+    assert '"Run submission assessment for Student 0001"' in process_text
+    assert "Run submission assessment for Student 0002" not in process_text
     assert "Ana Novak" not in process_text
     assert "Boris Kovac" not in process_text
     assert not (workspace / ".slaif_prompts").exists()
+
+    validator_helper = workspace / "report_validator.py"
+    assert validator_helper.exists()
+    assert validator_helper.read_text(encoding="utf-8") == (
+        REPO_ROOT / "slaif_defense_grading" / "report_validation.py"
+    ).read_text(encoding="utf-8")
 
     agents_md = workspace / "AGENTS.md"
     assert agents_md.exists()
@@ -1060,8 +1071,18 @@ def test_generated_process_script_writes_timing_statistics(tmp_path: Path) -> No
     assert prepare_result.returncode == 0, prepare_result.stderr
 
     fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
     fake_codex = fake_bin / "codex"
-    write_text(fake_codex, "#!/bin/bash\nsleep 1\n")
+    fake_codex.write_text(
+        "#!/bin/bash\n"
+        "student=${!#}\n"
+        "student=${student#Run submission assessment for }\n"
+        "sleep 1\n"
+        "mkdir -p \"$student\"\n"
+        "printf '%s\\n' \"{\\\"pseudonym\\\": \\\"$student\\\", \\\"assignment_submitted\\\": true, \\\"all_tasks_implemented\\\": true, \\\"task_details\\\": [], \\\"looks_llm_generated\\\": \\\"uncertain\\\", \\\"llm_generation_indicators\\\": [], \\\"code_copy_indications\\\": [], \\\"notes\\\": \\\"\\\"}\" > \"$student/report.json\"\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     fake_codex.chmod(0o755)
 
     result = subprocess.run(
@@ -1075,16 +1096,20 @@ def test_generated_process_script_writes_timing_statistics(tmp_path: Path) -> No
 
     assert result.returncode == 0, result.stderr
     stats = json.loads((workspace / "processing_stats.json").read_text(encoding="utf-8"))
-    assert stats["schema_version"] == 1
+    assert stats["schema_version"] == 2
     assert stats["run_status"] == "completed"
     assert stats["planned_students"] == 2
     assert stats["processed_students"] == 2
-    assert stats["successful_students"] == 2
+    assert stats["successful_students"] == 1
     assert stats["failed_students"] == 0
-    assert stats["total_time_seconds"] >= 2
-    assert stats["average_time_seconds"] >= 1
-    assert [row["pseudonym"] for row in stats["students"]] == ["Student 0001", "Student 0002"]
-    assert all(row["duration_seconds"] >= 1 for row in stats["students"])
+    assert stats["skipped_students"] == 0
+    assert stats["generated_unresolved_students"] == 1
+    assert stats["total_time_seconds"] >= 1
+    assert stats["average_time_seconds"] >= 0.5
+    assert [(row["pseudonym"], row["outcome"]) for row in stats["students"]] == [
+        ("Student 0001", "agent_success"),
+        ("Student 0002", "generated_unresolved"),
+    ]
     assert all(row["exit_code"] == 0 for row in stats["students"])
 
 
@@ -1148,9 +1173,9 @@ def test_prepare_codex_profile_none_omits_profile_flag(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     process_text = (workspace / "process.sh").read_text(encoding="utf-8")
-    assert "-p " not in process_text
+    assert "codex -p " not in process_text
     assert "-c model_reasoning_effort" not in process_text
-    assert process_text.count("codex --ask-for-approval never -s workspace-write exec --skip-git-repo-check") == 2
+    assert process_text.count("codex --ask-for-approval never -s workspace-write exec --skip-git-repo-check") == 1
     assert "Ana Novak" not in process_text
     assert "Boris Kovac" not in process_text
 
@@ -1165,7 +1190,7 @@ def test_prepare_codex_reasoning_effort_low_is_rendered(tmp_path: Path) -> None:
     process_text = (workspace / "process.sh").read_text(encoding="utf-8")
     assert process_text.count(
         f"codex -p {DEFAULT_CODEX_PROFILE} -c model_reasoning_effort=low --ask-for-approval never -s workspace-write exec --skip-git-repo-check"
-    ) == 2
+    ) == 1
     assert "Ana Novak" not in process_text
     assert "Boris Kovac" not in process_text
 
@@ -1546,11 +1571,18 @@ def test_messy_prepare_default_mode_end_to_end_audit(tmp_path: Path) -> None:
     assert process_sh.stat().st_mode & stat.S_IXUSR
     assert "Phase 1" not in process_text
     assert "cat .slaif_prompts" not in process_text
-    assert process_text.count("Run submission assessment for Student ") == 5
-    for idx in range(1, 5):
-        assert process_text.index(f"Run submission assessment for Student {idx:04d}") < process_text.index(
-            f"Run submission assessment for Student {idx + 1:04d}"
-        )
+    assert process_text.count("Run submission assessment for Student ") == 3
+    assert 'run_planned_student "Student 0001" resolved' in process_text
+    assert 'run_planned_student "Student 0002" resolved' in process_text
+    assert 'run_planned_student "Student 0003" unresolved' in process_text
+    assert 'run_planned_student "Student 0004" resolved' in process_text
+    assert 'run_planned_student "Student 0005" unresolved' in process_text
+    assert process_text.index("Run submission assessment for Student 0001") < process_text.index(
+        "Run submission assessment for Student 0002"
+    )
+    assert process_text.index("Run submission assessment for Student 0002") < process_text.index(
+        "Run submission assessment for Student 0004"
+    )
 
     agents_text = (workspace / "AGENTS.md").read_text(encoding="utf-8")
     assert agents_text == (REPO_ROOT / "templates" / "workspace" / "AGENTS.md").read_text(encoding="utf-8")
@@ -1788,4 +1820,7 @@ def test_pdf_report_renders_with_core_fonts(tmp_path: Path, monkeypatch) -> None
     assert b"Processing Statistics" in final_pdf_bytes
     assert b"Total elapsed time: 12 seconds" in final_pdf_bytes
     assert b"Average time per processed student: 12 seconds" in final_pdf_bytes
-    assert b"Ana Novak (Student 0001)" in final_pdf_bytes
+    # Newer fpdf2 releases escape parentheses in text show operators.
+    assert b"Ana Novak (Student 0001)" in final_pdf_bytes or (
+        b"Ana Novak \\(Student 0001\\)" in final_pdf_bytes
+    )

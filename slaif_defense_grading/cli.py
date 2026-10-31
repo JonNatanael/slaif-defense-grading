@@ -32,8 +32,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
             Real roster data is read locally from --students-csv. The generated workspace
             receives only pseudonyms, a canonical task.* assignment file, a workspace
-            AGENTS.md, a report template, pseudonymized submission text files,
-            associations.csv, and a locally rendered process.sh. The private pseudonym map,
+            AGENTS.md, a report template, a standalone report_validator.py helper,
+            pseudonymized submission text files, associations.csv, and a locally
+            rendered process.sh. The private pseudonym map,
             student-output copies, and preprocessing report are written under
             --private-output, outside the workspace.
             """
@@ -65,6 +66,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
 DEFAULT_CODEX_PROFILE = "early-beta"
 DEFAULT_CODEX_REASONING_EFFORT = "medium"
 
+# Central validation point for reasoning effort values, shared by the CLI and
+# the activate_assignment.sh wrapper (which passes its optional third argument
+# straight through to --codex-reasoning-effort instead of keeping its own list).
+CODEX_REASONING_EFFORTS = ("none", "low", "medium", "high", "xhigh")
+
 
 def add_prepare_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
@@ -79,6 +85,7 @@ def add_prepare_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--codex-reasoning-effort",
         default=DEFAULT_CODEX_REASONING_EFFORT,
+        choices=list(CODEX_REASONING_EFFORTS),
         help=(
             "Reasoning effort rendered into process.sh as '-c model_reasoning_effort=<effort>'. "
             "The qwen-neumann model supports low/medium/xhigh; higher values are slower per student. "

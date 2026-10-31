@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run a complete private oral-verification workflow for one assignment.
 #
-# Usage: ./activate_assignment.sh <codex-profile> <assignment-directory>
+# Usage: ./activate_assignment.sh <codex-profile> <assignment-directory> [reasoning-effort]
 #
 # The assignment directory must contain exactly one instruction file and one or
 # more submission ZIPs. Its parent directory must contain exactly one
@@ -9,13 +9,26 @@
 # directory under <assignment-directory>/.slaif-defense-grading/runs/.
 set -euo pipefail
 
-if (( $# != 2 )); then
-    echo "Usage: $0 <codex-profile> <assignment-directory>" >&2
+if (( $# < 2 || $# > 3 )); then
+    echo "Usage: $0 <codex-profile> <assignment-directory> [reasoning-effort]" >&2
     exit 64
 fi
 
 codex_profile=$1
 assignment_arg=$2
+# The optional third argument selects the Codex reasoning effort passed to
+# prepare as --codex-reasoning-effort. When omitted it defaults to 'medium',
+# the Python CLI default; 'none' omits the override. Value validation is
+# centralized in the Python CLI (argparse choices), so no model-specific
+# effort list is maintained here.
+reasoning_effort="medium"
+if (( $# == 3 )); then
+    if [[ -z "$3" ]]; then
+        echo "ERROR: reasoning-effort must not be empty (use 'none' to omit the override)" >&2
+        exit 64
+    fi
+    reasoning_effort=$3
+fi
 
 if [[ ! -d "$assignment_arg" ]]; then
     echo "ERROR: assignment directory does not exist: $assignment_arg" >&2
@@ -66,6 +79,7 @@ echo "[slaif-defense-grading] Assignment: $assignment_dir" >&2
 echo "[slaif-defense-grading] Roster: ${rosters[0]}" >&2
 echo "[slaif-defense-grading] Instructions: ${task_files[0]}" >&2
 echo "[slaif-defense-grading] Submission ZIPs: ${#submission_zips[@]}" >&2
+echo "[slaif-defense-grading] Reasoning effort: $reasoning_effort" >&2
 
 # If a student_order.txt exists in the data directory, use it to control processing order.
 student_order_args=()
@@ -82,6 +96,7 @@ PYTHONPATH="$repo_dir${PYTHONPATH:+:$PYTHONPATH}" python3 -m slaif_defense_gradi
 
 python3 "$repo_dir/slaif-defense-grading.py" prepare \
     --codex-profile "$codex_profile" \
+    --codex-reasoning-effort "$reasoning_effort" \
     ${student_order_args[@]+"${student_order_args[@]}"} \
     --input-file "${submission_zips[@]}" \
     --students-csv "$normalized_roster" \

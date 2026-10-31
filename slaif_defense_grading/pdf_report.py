@@ -335,6 +335,9 @@ def render_final_report_pdf(
             f"Total elapsed time: {duration(processing_stats.get('total_time_seconds'))}\n"
             f"Average time per processed student: {duration(processing_stats.get('average_time_seconds'))}"
         )
+        if processing_stats.get("schema_version", 1) == 2:
+            summary += f"\nSkipped students (valid existing report reused): {processing_stats.get('skipped_students', 'Unknown')}"
+            summary += f"\nLocally generated unresolved reports: {processing_stats.get('generated_unresolved_students', 'Unknown')}"
         pdf.multi_cell(0, 5, safe(summary), new_x="LMARGIN", new_y="NEXT")
 
         student_rows = processing_stats.get("students")
@@ -343,27 +346,29 @@ def render_final_report_pdf(
             pdf.set_font(font_family, "B", 11)
             pdf.multi_cell(0, 6, safe("Per-student processing times"), new_x="LMARGIN", new_y="NEXT")
             names = student_names or {}
-            timing_rows: List[List[str]] = [["Student", "Processing time", "Exit code"]]
+            has_outcome = any(isinstance(student, dict) and "outcome" in student for student in student_rows)
+            if has_outcome:
+                timing_rows: List[List[str]] = [["Student", "Outcome", "Processing time", "Exit code"]]
+            else:
+                timing_rows = [["Student", "Processing time", "Exit code"]]
             for student in student_rows:
                 if not isinstance(student, dict):
                     continue
                 pseudonym = str(student.get("pseudonym") or "Unknown")
                 name = names.get(pseudonym)
                 label = f"{name} ({pseudonym})" if name else pseudonym
-                timing_rows.append(
-                    [
-                        safe(label),
-                        safe(duration(student.get("duration_seconds"))),
-                        safe(str(student.get("exit_code", "Unknown"))),
-                    ]
-                )
+                row = [safe(label)]
+                if has_outcome:
+                    row.append(safe(str(student.get("outcome", "Unknown"))))
+                row.extend([safe(duration(student.get("duration_seconds"))), safe(str(student.get("exit_code", "Unknown")))])
+                timing_rows.append(row)
             if len(timing_rows) > 1:
                 pdf.set_font(font_family, "", 9)
                 with pdf.table(
                     rows=timing_rows,
                     text_align="LEFT",
                     line_height=pdf.font_size * 1.5,
-                    col_widths=(0.60, 0.25, 0.15),
+                    col_widths=(0.45, 0.25, 0.18, 0.12) if has_outcome else (0.60, 0.25, 0.15),
                 ):
                     pass
 

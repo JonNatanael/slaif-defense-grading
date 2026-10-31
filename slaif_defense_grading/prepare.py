@@ -20,7 +20,10 @@ from .core import (
 )
 from .io_utils import decode_text_file, detect_bom_encoding, eprint, list_document_files, list_readable_files, unique_path
 from .models import DOCUMENT_SUFFIXES, READABLE_SUFFIXES
-from .process_script import render_process_script
+from . import report_validation
+from .process_script import ProcessStatus, ProcessStudent, render_process_script
+
+WORKSPACE_VALIDATOR_NAME = "report_validator.py"
 
 
 @dataclass(frozen=True)
@@ -435,6 +438,11 @@ def semicolon_join(values: Sequence[str]) -> str:
     return ";".join(values)
 
 
+def _process_status(association: Association) -> str:
+    """Map an association status to the process.sh planning status."""
+    return ProcessStatus.RESOLVED if association.status == "matched" else ProcessStatus.UNRESOLVED
+
+
 def write_associations_csv(
     students: Sequence[RosterStudent],
     workspace: Path,
@@ -792,10 +800,17 @@ def prepare_workspace(
             )
 
     associations = write_associations_csv(students, workspace, text_outputs_by_row, document_outputs_by_row)
+    # The report validator is copied verbatim into the workspace so the
+    # generated process.sh can validate reports as a standalone, pseudonym-safe
+    # helper without the source repository being importable at runtime.
+    shutil.copy2(Path(report_validation.__file__), workspace / WORKSPACE_VALIDATOR_NAME)
     render_process_script(
         template_path,
         workspace / "process.sh",
-        [association.student.pseudonym for association in associations],
+        [
+            ProcessStudent(pseudonym=association.student.pseudonym, status=_process_status(association))
+            for association in associations
+        ],
         codex_profile=codex_profile,
         reasoning_effort=reasoning_effort,
     )
