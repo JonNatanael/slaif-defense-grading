@@ -22,6 +22,7 @@ from .io_utils import decode_text_file, detect_bom_encoding, eprint, list_docume
 from .models import DOCUMENT_SUFFIXES, READABLE_SUFFIXES
 from . import report_validation
 from . import task_requirements
+from .similarity import CandidateGenerationResult, candidate_pair_count, generate_comparison_candidates
 from .process_script import ProcessStatus, ProcessStudent, render_process_script
 from .task_extract import TaskExtractionResult, WORKSPACE_EXTRACTED_NAME, extract_task_text
 
@@ -70,6 +71,7 @@ class PrepareResult:
     student_outputs_dir: Path
     student_outputs_index: Path
     task_extraction: TaskExtractionResult
+    candidate_result: CandidateGenerationResult
 
 
 @dataclass
@@ -572,6 +574,20 @@ def write_preprocessing_report(
         lines.append("- No usable local text extraction was produced; the original assignment file remains the assignment source in the workspace.")
         for warning in result.task_extraction.warnings:
             lines.append(f"- Warning: {warning}")
+    candidate_pairs = candidate_pair_count(result.candidate_result.artifact)
+    lines.extend(
+        [
+            "",
+            "## Similarity Candidates",
+            "",
+            f"- Indexed submissions: {result.candidate_result.indexed_submissions} (resolved students with readable source files)",
+            f"- Indexed source files: {result.candidate_result.indexed_files}",
+            f"- Candidate pairs: {candidate_pairs} (symmetric shortlist entries in `comparison_candidates.json`)",
+            "- Local deterministic preprocessing (line shingling with winnowed fingerprints); no model or API call.",
+            "- Candidates are a high-recall shortlist for focused agent inspection and later human review; they are not evidence of copying or misconduct and do not label any student.",
+            "- Generic lines and heuristically detected assignment-provided material (starter code, task-mandated text) are filtered from the fingerprints.",
+        ]
+    )
     lines.extend(["", "## Unmatched LMS Folders", ""])
 
     if result.unmatched_folders:
@@ -666,7 +682,9 @@ def leak_check_workspace(
 
     identifiers.extend(extra_private_identifiers)
     identifiers = sorted({value for value in identifiers if value.strip()}, key=len, reverse=True)
-    text_suffixes = {*READABLE_SUFFIXES, ".csv", ".sh"}
+    # .json covers workspace JSON artifacts (report template, comparison
+    # candidates, and the task-requirements file once the agent writes it).
+    text_suffixes = {*READABLE_SUFFIXES, ".csv", ".sh", ".json"}
     allowed_opaque_rel_paths = {
         path.relative_to(workspace).as_posix()
         for path in allowed_opaque_paths
@@ -828,6 +846,22 @@ def prepare_workspace(
             )
 
     associations = write_associations_csv(students, workspace, text_outputs_by_row, document_outputs_by_row)
+    # Local, deterministic similarity candidate generation: a pseudonym-only
+    # high-recall shortlist so each student agent inspects a focused pair list
+    # instead of scanning the whole resolved cohort. No model/API call is
+    # made; a failure is a hard prepare error (it must never silently fall
+    # back to cohort-wide model comparison).
+    extracted_assignment = workspace / WORKSPACE_EXTRACTED_NAME
+    if extracted_assignment.is_file():
+        assignment_text = extracted_assignment.read_text(encoding="utf-8", errors="replace")
+    elif task_file.suffix.lower() in READABLE_SUFFIXES:
+        assignment_text = decode_text_file(task_file)
+    else:
+        assignment_text = ""
+    try:
+        candidate_result = generate_comparison_candidates(workspace, associations, assignment_text)
+    except Exception as exc:  # noqa: BLE001 - surface any failure as a clear prepare error
+        raise ValueError(f"local similarity candidate generation failed: {exc.__class__.__name__}: {exc}") from exc
     # The report validator is copied verbatim into the workspace so the
     # generated process.sh can validate reports as a standalone, pseudonym-safe
     # helper without the source repository being importable at runtime.
@@ -863,6 +897,7 @@ def prepare_workspace(
         student_outputs_dir=student_outputs_dir,
         student_outputs_index=student_outputs_index,
         task_extraction=task_extraction,
+        candidate_result=candidate_result,
     )
     write_preprocessing_report(private_output, result)
     private_identifiers = [entry.original_folder for entry in manifest_entries]

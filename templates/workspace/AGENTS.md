@@ -17,6 +17,7 @@ Use these workspace files:
 - `task.*` contains the canonical assignment, usually `task.tex` or `task.pdf`; it is the authoritative assignment source and must never be modified.
 - `task_extracted.txt` is a plain-text version of the canonical assignment that `prepare` extracted deterministically and locally during preprocessing. Use it for fast, consistent reading of the assignment. It is a shared artifact, not a submission. If it is absent (for example for a scanned PDF), fall back to reading `task.*` directly.
 - `task_requirements.json` is the one-time shared analysis of what the assignment requires. It is generated at most once per run by the assignment-analysis command (see Command Scope) and reused by every student assessment. It is a shared artifact, not a submission.
+- `comparison_candidates.json` is the local, high-recall similarity shortlist generated during preprocessing. For your target student it lists candidate submissions that share meaningful near-contiguous source blocks, with the individual-file line ranges to start from. It is a shared artifact and a routing hint, not a submission and not evidence of copying or misconduct.
 - `report_template.json` is the mandatory schema for the report you must produce.
 
 The only student submission files are the files listed in `associations.csv`.
@@ -31,6 +32,7 @@ Do not treat these files or directories as submissions:
 - `task.*`
 - `task_extracted.txt`
 - `task_requirements.json`
+- `comparison_candidates.json`
 - `report_template.json`
 - `process.sh`
 - `report_validator.py`
@@ -112,11 +114,13 @@ For requirement identification:
 - Consult the canonical `task.*` only when the structured artifact is ambiguous, missing, or lacks detail needed for the report.
 - Never treat `task_extracted.txt` or `task_requirements.json` as a student submission, and never modify them during a student run.
 
-For comparison:
+For copying indications:
 
-- Compare the target submission package against all other students with resolved associations in `associations.csv`.
-- Use all files listed for those other students.
-- Use the generated assignment file, usually `task.tex` or `task.pdf`, so assignment-required overlap is not reported as distinctive or as copying.
+- Read only the target student's entries in `comparison_candidates.json`; do not compare the target against every other resolved submission.
+- Inspect only the listed candidate submissions for copying indications, starting from the referenced matching blocks and reading enough surrounding context to judge whether the similarity is distinctive and non-generic.
+- Candidate scores and matching blocks are routing hints from a local heuristic, not evidence: never copy a candidate score into `code_copy_indications`, and keep the existing high evidence bar before reporting an indication.
+- If the target has no candidate entries, or no candidate survives detailed inspection, leave `code_copy_indications` empty. Do not fall back to scanning the entire cohort: the shortlist is a deliberate performance/recall tradeoff, and students who are not listed as candidates (including unresolved students) must not be inspected for copying.
+- Use the generated assignment file, usually `task.tex` or `task.pdf`, so assignment-required overlap is not reported as distinctive or as copying (assignment-provided material is already filtered from the shortlist heuristically).
 
 Line numbers always refer to the individual submission file (the path after `| submission |` in the `==== BEGIN ... ====` markers of the concatenated text file), counted from the first line of that file - not to the concatenated file itself.
 
@@ -159,6 +163,7 @@ Do not modify preprocessing files:
 - `task.*`
 - `task_extracted.txt` (shared local extraction of the assignment; only `prepare` creates it)
 - `task_requirements.json` (shared one-time assignment analysis; only the assignment-analysis command creates or replaces it, atomically)
+- `comparison_candidates.json` (shared local similarity shortlist; only `prepare` creates it)
 - `report_template.json`
 - `process.sh`
 - `report_validator.py`

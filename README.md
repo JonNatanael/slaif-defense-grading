@@ -68,7 +68,7 @@ This workflow creates targeted oral-verification questions from the submitted ma
 The supported workflow is:
 
 1. `prepare`: run local preprocessing and create a pseudonymized agent workspace.
-2. Run `process.sh`: first ensure the one-time shared `task_requirements.json` assignment analysis exists (reusing it when valid, invoking the assignment-analysis agent at most once), then ask the agent to write one pseudonymized submission-assessment report (`report.json`) per student, skipping students that already have a valid report and generating neutral local reports for students without submissions.
+2. Run `process.sh`: first ensure the one-time shared `task_requirements.json` assignment analysis exists (reusing it when valid, invoking the assignment-analysis agent at most once), then ask the agent to write one pseudonymized submission-assessment report (`report.json`) per student - inspecting only that student's local similarity candidates from `comparison_candidates.json` instead of the whole cohort - skipping students that already have a valid report and generating neutral local reports for students without submissions.
 3. `finalize`: locally map pseudonymized reports back to private named instructor outputs, rendering a human-readable `report.pdf` next to the machine-readable `report.json`, plus a single-table `final_report.pdf` overview of all students.
 
 Prepare the pseudonymized workspace:
@@ -105,6 +105,7 @@ python3 slaif-defense-grading.py prepare \
 - copies the assignment into the workspace with a canonical `task.*` filename, such as `task.tex` or `task.pdf`;
 - extracts the assignment text locally and deterministically into `task_extracted.txt` (readable formats are decoded directly; PDFs via the `pypdf` dependency or a local `pdftotext` executable; no remote service, no OCR), preserving the canonical `task.*` untouched;
 - copies the standalone `task_requirements_validator.py` helper into the workspace so `process.sh` can validate the shared requirements file without the source repository;
+- generates `comparison_candidates.json`, a deterministic local similarity shortlist over the resolved pseudonymized submissions (no model or API call), so each student agent inspects a focused candidate list instead of comparing against every other resolved submission;
 - generates pseudonymized `students.csv`;
 - generates pseudonymized `associations.csv`;
 - copies `templates/workspace/AGENTS.md` into the workspace as `AGENTS.md`;
@@ -159,6 +160,7 @@ lab-agent/
   task.pdf
   task_extracted.txt        # local text extraction of the assignment (when extraction succeeds)
   task_requirements.json    # created by process.sh's one-time assignment analysis
+  comparison_candidates.json  # local similarity shortlist (created by prepare)
 ```
 
 Private instructor-only output:
@@ -201,6 +203,7 @@ Before running `process.sh`, inspect:
 - `workspace/lab-agent/students.csv` and `workspace/lab-agent/associations.csv`;
 - `workspace/lab-agent/report_template.json`;
 - `workspace/lab-agent/task_extracted.txt`, when present;
+- `workspace/lab-agent/comparison_candidates.json` (the local similarity shortlist);
 - `workspace/lab-private/preprocessing_report.md`.
 
 The agent-facing workspace should contain no real names, emails, student IDs, or original LMS folder names. The private report may contain real matching details and must remain local.
@@ -227,6 +230,25 @@ Run `./process.sh --force` to regenerate reports even when a valid one already e
 One failing student does not stop the later students: every planned student is attempted in order, and `process.sh` exits nonzero only after all planned students have been handled, if any attempted agent invocation failed.
 
 Before any student that needs an agent invocation is processed, `process.sh` validates the shared `task_requirements.json` requirements file with the workspace `task_requirements_validator.py` helper. If the file is valid it is reused (`reused`); if it is missing or invalid, `process.sh` invokes Codex exactly once with the assignment-analysis command (`Analyze assignment requirements`), which reads only the assignment files, writes only `task_requirements.json`, and is validated before any student is processed (`generated`). The analysis is skipped entirely (`skipped`) when no student needs an agent invocation - for example when every student is unresolved or every student already has a valid report - so resumed runs never repeat it. If the analysis fails or produces invalid output, matched students without a valid report are recorded as `skipped_prerequisite_failed` and are not processed without the shared prerequisite; already valid student reports are preserved, unresolved students still receive their neutral local reports, and `process.sh` exits nonzero. The student assessment agents use `task_requirements.json` as their normal requirements source, consult the canonical `task.*` only when the structured artifact is ambiguous, and never treat the shared artifacts as submissions or modify them.
+
+### Local Similarity Candidates
+
+During local preprocessing, `prepare` generates `comparison_candidates.json`, a versioned, pseudonym-only shortlist of submission pairs that share meaningful near-contiguous source blocks. The algorithm (`line-shingle-winnowing`, version 1) is deterministic and dependency-light: normalized source lines are grouped into fixed-size shingles, winnowed into stable fingerprints (never Python's randomized `hash()`), and accumulated in one inverted index over all resolved submissions, so pair scores are only computed for submissions that actually share fingerprints. Matching blocks are contiguous or near-contiguous runs of shared fingerprints; a pair is shortlisted only for a block of at least the configured minimum length (roughly ten non-trivial consecutive lines), with a deterministic score, the individual-file line ranges, and the shared fingerprint count recorded for each block. Pairs are emitted symmetrically, so a candidate is available when either student is the assessment target.
+
+The following are explicit named constants in `slaif_defense_grading/similarity.py` and are recorded in the artifact's `algorithm.parameters`:
+
+- normalized lines per shingle (`shingle_size`);
+- winnowing window size (`winnowing_window`);
+- minimum shared block length in source lines (`min_block_length`);
+- minimum shared fingerprints per block (`min_block_fingerprints`);
+- minimum candidate score (`min_candidate_score`);
+- document-frequency cutoff for overly common fingerprints (`max_documents_per_fingerprint`);
+- near-contiguity position gap (`position_gap`);
+- maximum candidates per target (`max_candidates_per_target`), with deterministic score-then-pseudonym tie-breaking.
+
+The defaults prefer high recall over a very short list: a false positive costs one focused agent comparison, while a false negative can hide relevant evidence. Empty lines and conservatively generic lines (imports, braces-only lines, common display/setup boilerplate) are ignored; identifiers, string literals, comments, and non-obvious structure are retained. Fingerprints that also appear in the readable assignment text (starter code or task-mandated text) are removed as a documented heuristic, and a large distinctive student block is not discarded merely because a few of its lines overlap the task.
+
+Candidates are routing hints for focused agent inspection and later human review - they are not findings, not evidence of copying or misconduct, and they never label a student. Unresolved students and unassociated files never enter the index, and the artifact contains pseudonyms only. Generation is reproducible from the prepared pseudonymized inputs, makes no model or API call, and a generation failure is a hard `prepare` error rather than a silent fallback to cohort-wide model comparison. `process.sh` reuses the prepared artifact on resumed runs, and `finalize` never modifies it. Aggregate, pseudonym-safe statistics (indexed submissions/files, candidate pairs) are reported in the private `preprocessing_report.md` under "Similarity Candidates".
 
 `process.sh` records its work in `processing_stats.json` (schema version 2), creating it at the start of each run and updating it atomically after every handled student, so a failed or interrupted run retains the latest completed update. It records only pseudonyms, per-student outcome (`agent_success`, `agent_failed`, `skipped_valid_report`, `generated_unresolved`, or `skipped_prerequisite_failed`), elapsed seconds and exit codes, plus planned/processed/success/failed counts, aggregate skipped and locally-generated counts, run status, total elapsed time, and average time per processed student. The one-time assignment analysis is recorded separately in an `assignment_analysis` block with its outcome (`reused`, `generated`, `failed`, or `skipped`), duration and exit code when an agent was invoked, and whether local extraction warnings were present. A resumed run describes the work performed in that invocation: reused reports are counted as skipped, not as newly produced. `finalize` accepts statistics from both the current version 2 and the earlier version 1 format, with or without the `assignment_analysis` block.
 
@@ -292,7 +314,7 @@ There are two different `AGENTS.md` files:
 - Root `AGENTS.md` is for coding agents modifying this repository.
 - Generated workspace `AGENTS.md` is copied from `templates/workspace/AGENTS.md` and is for the later oral-verification/grading agent inside the pseudonymized workspace.
 
-Preprocessing is not an agent task. The later agent should use `students.csv`, `associations.csv`, the generated assignment file (`task.tex`, `task.pdf`, or another `task.*`), and the shared `task_extracted.txt` and `task_requirements.json` artifacts, and should treat only files listed in `associations.csv` as student submissions.
+Preprocessing is not an agent task. The later agent should use `students.csv`, `associations.csv`, the generated assignment file (`task.tex`, `task.pdf`, or another `task.*`), and the shared `task_extracted.txt`, `task_requirements.json`, and `comparison_candidates.json` artifacts, and should treat only files listed in `associations.csv` as student submissions. For copying indications, the agent inspects only its target's entries in `comparison_candidates.json` (starting from the referenced blocks), treats candidate scores as non-evidentiary routing hints, and leaves `code_copy_indications` empty when the target has no candidates or none survives detailed inspection - it never scans the whole resolved cohort, a deliberate performance/recall tradeoff that keeps final judgment with the human instructor during review.
 
 There is no `.slaif_prompts/` directory.
 
@@ -374,7 +396,8 @@ The end-to-end messy fixture covers:
 - default-excluded opaque PDF;
 - opt-in opaque document behavior;
 - local deterministic assignment extraction (`task_extracted.txt`) with honest failure for text-less PDFs;
-- one-time shared `task_requirements.json` analysis (validation, reuse, exactly-once generation, failure isolation, skip on resumed/unresolved-only runs).
+- one-time shared `task_requirements.json` analysis (validation, reuse, exactly-once generation, failure isolation, skip on resumed/unresolved-only runs);
+- deterministic local similarity candidate generation (`comparison_candidates.json`) with symmetric pairs, individual-file line ranges, generic-line and assignment-material filtering, and pseudonym-only output.
 
 Run tests with:
 
@@ -400,6 +423,7 @@ slaif_defense_grading/
   models.py
   prepare.py
   process_script.py
+  similarity.py
   task_extract.py
   task_requirements.py
 
